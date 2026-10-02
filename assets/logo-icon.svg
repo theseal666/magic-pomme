@@ -1,16 +1,31 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <title>magic-pomme app icon</title>
   <defs>
-    <linearGradient id="skin" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#E8574C"/>
-      <stop offset="1" stop-color="#B8262C"/>
+    <linearGradient id="skin" x1="0.1" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#EE5F52"/>
+      <stop offset="0.55" stop-color="#D23A38"/>
+      <stop offset="1" stop-color="#A81F26"/>
+    </linearGradient>
+    <linearGradient id="blade" x1="0" y1="0" x2="0.9" y2="0.7">
+      <stop offset="0" stop-color="#93C851"/>
+      <stop offset="1" stop-color="#5A8829"/>
     </linearGradient>
   </defs>
+
   <rect width="256" height="256" rx="58" fill="url(#skin)"/>
-  <!-- A leaf: the only fruit reference, deliberately abstract. No apple shape. -->
-  <path d="M150 34c20-10 40-8 46 2 6 10-4 26-24 34-12 5-24 4-30-2-6-7-2-26 8-34z"
-        fill="#86B84A" opacity="0.95"/>
-  <g transform="translate(58 62) scale(5.83)" fill="none" stroke="#fff"
+  <rect width="256" height="128" rx="58" fill="#fff" opacity="0.07"/>
+
+  <!-- Stalk and leaf sit fully inside the canvas: the leaf tip reaches x=196,
+       y=30, clear of the 256 box and clear of the mark below. -->
+  <path d="M138 74 C 137 62 140 54 146 48" stroke="#6E4A2C" stroke-width="7.5"
+        fill="none" stroke-linecap="round"/>
+  <g transform="translate(146 62) rotate(-21) scale(0.92)">
+    <path d="M0 0 Q 19 -25 57 -17 Q 31 10 0 0 Z" fill="url(#blade)"/>
+    <path d="M3 -2 Q 26 -11 54 -16" stroke="#3B651B" stroke-width="2.6" fill="none"
+          stroke-linecap="round" opacity="0.6"/>
+  </g>
+
+  <g transform="translate(62 92) scale(5.45)" fill="none" stroke="#fff"
      stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
     <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>
   </g>
