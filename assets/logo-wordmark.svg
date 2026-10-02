@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 96" width="420" height="96">
+  <title>magic-pomme wordmark</title>
+  <g transform="translate(8 24) scale(2)" fill="none" stroke="#B8262C"
+     stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>
+  </g>
+  <text x="124" y="62" font-family="Inter, DejaVu Sans, Helvetica, sans-serif"
+        font-size="46" font-weight="600" fill="#1B1B1B" letter-spacing="-1">magic-pomme</text>
+</svg>
