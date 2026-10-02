@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import __version__, bluetooth, devices, drivers, keyd
+from . import __version__, bluetooth, devices, drivers, keyd, permissions
 
 OK, BAD, WARN = "\033[32m", "\033[31m", "\033[33m"
 DIM, BOLD, OFF = "\033[2m", "\033[1m", "\033[0m"
@@ -155,6 +155,73 @@ def cmd_bt(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    if args.print_only:
+        print(f"# magic-pomme setup -- files that `--install` would write.\n"
+              f"# Read them before running anything as root.\n")
+        for path, (content, mode) in permissions.files().items():
+            print(f"{BOLD}# ===== {path}  (mode {mode:o}) ====={OFF}")
+            print(content)
+        print(f"{BOLD}# ===== commands ====={OFF}")
+        print(f"groupadd --system {permissions.GROUP}")
+        for group in permissions.REQUIRED_GROUPS:
+            print(f"usermod -aG {group} {permissions.target_user()}")
+        print("udevadm control --reload-rules")
+        print(f"systemctl daemon-reload && "
+              f"systemctl enable --now {permissions.SERVICE.name}")
+        return 0
+
+    if args.uninstall:
+        try:
+            for line in permissions.uninstall():
+                print(f"  {line}")
+        except PermissionError as error:
+            print(f"  {BAD}{error}{OFF}", file=sys.stderr)
+            return 13
+        return 0
+
+    if args.install:
+        try:
+            for line in permissions.install():
+                print(f"  {OK}+{OFF} {line}")
+        except PermissionError as error:
+            print(f"  {BAD}{error}{OFF}", file=sys.stderr)
+            return 13
+        except Exception as error:  # noqa: BLE001 - surface the real cause
+            print(f"  {BAD}{error}{OFF}", file=sys.stderr)
+            return 1
+        print(f"\n  {OK}done{OFF} - log out and back in for group membership "
+              f"to take effect")
+        return 0
+
+    report = permissions.status()
+    mark = f"{OK}complete{OFF}" if report.complete else f"{WARN}not set up{OFF}"
+    _heading(f"setup  [{mark}]")
+
+    for group in permissions.REQUIRED_GROUPS:
+        if group in report.missing_groups:
+            state = f"{BAD}missing{OFF}"
+        elif group in report.stale_groups:
+            state = f"{WARN}joined, needs re-login{OFF}"
+        else:
+            state = f"{OK}ok{OFF}"
+        print(f"  group {group:<14} {state}")
+
+    for path in permissions.files():
+        state = f"{OK}installed{OFF}" if path in report.installed else f"{BAD}absent{OFF}"
+        print(f"  {str(path):<52} {state}")
+
+    total = len(report.writable) + len(report.unwritable)
+    print(f"  writable parameters  {len(report.writable)}/{total}")
+
+    if report.needs_relogin:
+        print(f"\n  {WARN}log out and back in to pick up group membership{OFF}")
+    elif not report.complete:
+        print(f"\n  review:   magic-pomme setup --print")
+        print(f"  apply:    sudo magic-pomme setup --install")
+    return 0 if report.complete else 1
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     _heading("devices")
     cmd_devices(args)
@@ -184,6 +251,14 @@ def main(argv: list[str] | None = None) -> int:
 
     subs.add_parser("keyd", help="keyd readiness for live remapping")
 
+    setup = subs.add_parser(
+        "setup", help="one-time privilege setup so the GUI never needs root"
+    )
+    setup.add_argument("--print", dest="print_only", action="store_true",
+                       help="show the files and commands without changing anything")
+    setup.add_argument("--install", action="store_true", help="apply (needs root)")
+    setup.add_argument("--uninstall", action="store_true", help="undo (needs root)")
+
     bt = subs.add_parser("bt", help="Bluetooth devices and pairing")
     bt.add_argument(
         "bt_action",
@@ -202,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         "set": cmd_set,
         "keyd": cmd_keyd,
         "bt": cmd_bt,
+        "setup": cmd_setup,
     }
     if args.command in ("devices", "status", "keyd") and not hasattr(args, "module"):
         args.module = None

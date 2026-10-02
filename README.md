@@ -33,6 +33,57 @@ A "Mac mode" toggle that applies the whole tested bundle at once — driver
 params, keyd layers, the terminal Ctrl-restore, and no-autosuspend — is the
 product. The tray icon is the thin part.
 
+## Setup
+
+The driver parameters are root-owned, but the GUI should never run as root and
+should never nag for a password. So privilege is handled **once**, at install,
+and never again.
+
+Read what it will do first:
+
+```sh
+magic-pomme setup --print
+```
+
+Then apply it:
+
+```sh
+sudo magic-pomme setup --install
+```
+
+That creates a `magicpomme` group, adds you to it (and to `keyd`), and installs
+three files: a root-run helper that chgrps and chmods a **whitelist** of driver
+parameters, a udev rule firing it on module load, and a boot-time oneshot for
+the case where a module is already loaded before udev replays events. Log out
+and back in once for group membership to take effect.
+
+Check at any time with `magic-pomme setup`, and undo with
+`sudo magic-pomme setup --uninstall`.
+
+### Is loosening those permissions safe?
+
+Every whitelisted parameter is an input-*behaviour* toggle -- modifier layout,
+Fn-key mode, scroll rate. None grant code execution or data access, so the
+worst a hostile local process in the group can do is rearrange your modifiers
+or make scrolling strange.
+
+One honest edge, stated plainly rather than buried: `swap_ctrl_cmd` also
+applies at the lock screen, so modifier behaviour could be altered during
+password entry. Low severity, but you should know before opting in.
+
+Membership of `keyd` grants *write* access to the remapping socket but not
+*read*: `keyd monitor` reads evdev directly and still needs root, so this is
+not a keylogging surface.
+
+### Packaging
+
+Distro maintainers will generally refuse a package that chmods sysfs. For that
+route, expose the same whitelist over a D-Bus system service guarded by a
+polkit action (`auth_admin_keep`, or `yes` for active local sessions).
+`permissions.py` is deliberately the only module that needs root, so that
+swap is contained.
+
+
 ## Scope
 
 - Profile switching: Mac mode / PC mode as one atomic change
