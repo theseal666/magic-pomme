@@ -33,6 +33,28 @@ A "Mac mode" toggle that applies the whole tested bundle at once — driver
 params, keyd layers, the terminal Ctrl-restore, and no-autosuspend — is the
 product. The tray icon is the thin part.
 
+## Installing
+
+Debian and Fedora mark the system Python as externally managed (PEP 668), so
+`pip install` into it is refused. Use pipx:
+
+```sh
+pipx install --editable ~/Documents/magic-pomme
+```
+
+`--editable` means source edits take effect without reinstalling.
+
+> **Note:** pipx installs the shim into `~/.local/bin`, which is **not** on
+> root's `secure_path`. So `sudo magic-pomme ...` will fail with "command not
+> found" -- give sudo the full path instead:
+>
+> ```sh
+> sudo ~/.local/bin/magic-pomme setup --install
+> ```
+
+Uninstall with `pipx uninstall magic-pomme`.
+
+
 ## Setup
 
 The driver parameters are root-owned, but the GUI should never run as root and
@@ -48,7 +70,7 @@ magic-pomme setup --print
 Then apply it:
 
 ```sh
-sudo magic-pomme setup --install
+sudo ~/.local/bin/magic-pomme setup --install
 ```
 
 That creates a `magicpomme` group, adds you to it (and to `keyd`), and installs

@@ -7,6 +7,8 @@ privileged and unprivileged halves stay visibly separate.
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import sys
 
 from . import __version__, bluetooth, devices, drivers, keyd, permissions
@@ -218,7 +220,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print(f"\n  {WARN}log out and back in to pick up group membership{OFF}")
     elif not report.complete:
         print(f"\n  review:   magic-pomme setup --print")
-        print(f"  apply:    sudo magic-pomme setup --install")
+        exe = sys.argv[0] if os.path.isabs(sys.argv[0]) else shutil.which("magic-pomme") or "magic-pomme"
+        # sudo resets PATH to secure_path, which excludes ~/.local/bin, so a
+        # bare "sudo magic-pomme" fails for a pipx install.
+        print(f"  apply:    sudo {exe} setup --install")
     return 0 if report.complete else 1
 
 
