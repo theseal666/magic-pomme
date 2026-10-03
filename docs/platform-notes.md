@@ -101,8 +101,8 @@ What is ruled out:
 - Not a missing node. `PRESENT=1`, `ONLINE=1`, `SCOPE=Device`; the kernel
   created the power supply and is polling it.
 - Not an error path. No HID, Bluetooth or battery messages in the kernel log.
-- Not transient. Flat zero across nine samples spanning several minutes of a
-  stable link.
+- Not transient. Flat zero across twenty samples over fifteen minutes, with
+  both devices connected and in active use throughout.
 
 Leading hypothesis is a regression in the generic HID battery-strength path
 between 6.12.107 and 6.12.111. The competing explanation, not yet excluded, is
