@@ -28,7 +28,7 @@ magic-pomme-tray = "magic_pomme.tray:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-magic_pomme = ["assets/*.svg"]
+magic_pomme = ["assets/*.svg", "profiles_data/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

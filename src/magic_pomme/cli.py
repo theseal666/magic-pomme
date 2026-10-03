@@ -12,7 +12,7 @@ import shutil
 import sys
 
 from . import (__version__, bluetooth, devices, drivers, keyd,
-               permissions, plasma_input, session)
+               permissions, plasma_input, profiles, session)
 
 OK, BAD, WARN = "\033[32m", "\033[31m", "\033[33m"
 DIM, BOLD, OFF = "\033[2m", "\033[1m", "\033[0m"
@@ -250,6 +250,53 @@ def cmd_scroll(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_profile(args: argparse.Namespace) -> int:
+    name = args.name or (profiles.State.load().profile or "mac")
+    if name not in profiles.PROFILES:
+        print(f"  unknown profile {name!r}", file=sys.stderr)
+        return 2
+    profile = profiles.PROFILES[name]()
+
+    if not args.apply:
+        _heading(f"profile: {profile.name} - {profile.description}")
+        for action, applied in profile.status():
+            mark = f"{OK}applied{OFF}" if applied else f"{WARN}pending{OFF}"
+            root = f" {DIM}(needs root){OFF}" if action.needs_root else ""
+            print(f"  [{mark}] {action.description}{root}")
+            if action.activation != profiles.LIVE:
+                print(f"            {DIM}{action.activation}{OFF}")
+        if profile.pending:
+            print(f"\n  apply:  magic-pomme profile {name} --apply")
+            if any(a.needs_root for a in profile.pending):
+                print(f"  {DIM}some parts need root; run that line under sudo{OFF}")
+        return 0 if not profile.pending else 1
+
+    state = profiles.State.load()
+    deferred: list[str] = []
+    for action in profile.actions:
+        if action.needs_root and os.geteuid() != 0:
+            print(f"  {WARN}skipped (needs root){OFF} {action.description}")
+            deferred.append(action.description)
+            continue
+        try:
+            action.apply(state)
+        except Exception as error:  # noqa: BLE001 - report, do not abort the rest
+            print(f"  {BAD}failed{OFF} {action.description}: {error}")
+            continue
+        print(f"  {OK}applied{OFF} {action.description}")
+        if action.activation != profiles.LIVE:
+            deferred.append(f"{action.description} - {action.activation}")
+    state.profile = name
+    state.save()
+
+    if deferred:
+        print(f"\n  {WARN}not yet in effect:{OFF}")
+        for item in deferred:
+            print(f"    {item}")
+    print(f"\n  revert with: magic-pomme profile pc --apply")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     _heading("devices")
     cmd_devices(args)
@@ -281,6 +328,13 @@ def main(argv: list[str] | None = None) -> int:
     setter.add_argument("--dry-run", action="store_true")
 
     subs.add_parser("keyd", help="keyd readiness for live remapping")
+
+    profile = subs.add_parser(
+        "profile", help="apply or inspect the whole macOS bundle")
+    profile.add_argument("name", nargs="?", choices=sorted(profiles.PROFILES),
+                         help="omit to show the current profile's status")
+    profile.add_argument("--apply", action="store_true",
+                         help="actually apply it (otherwise shows status)")
 
     scroll = subs.add_parser(
         "scroll", help="natural scrolling (macOS direction) for Apple pointers")
@@ -315,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
         "bt": cmd_bt,
         "setup": cmd_setup,
         "scroll": cmd_scroll,
+        "profile": cmd_profile,
     }
     if args.command in ("devices", "status", "keyd") and not hasattr(args, "module"):
         args.module = None

@@ -1,0 +1,9 @@
+[Layout]
+Use=true
+LayoutList=se
+VariantList=mac
+Model=pc105
+DisplayNames=
+Options=
+ResetOldOptions=true
+SwitchMode=Global
