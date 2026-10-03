@@ -1,0 +1,19 @@
+[Unit]
+Description=magic-pomme tray applet
+Documentation=https://github.com/theseal666/magic-pomme
+# NOT default.target: systemd user lingering is enabled on this machine, so
+# default.target is reached at boot, before any desktop exists. A tray applet
+# needs the panel, which arrives with graphical-session.target.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/magic-pomme-tray
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target

@@ -18,13 +18,17 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-tray = ["PySide6>=6.6"]
+tray = ["PyQt6>=6.6"]
 
 [project.scripts]
 magic-pomme = "magic_pomme.cli:main"
+magic-pomme-tray = "magic_pomme.tray:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+magic_pomme = ["assets/*.svg"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

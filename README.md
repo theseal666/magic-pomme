@@ -55,6 +55,42 @@ pipx install --editable ~/Documents/magic-pomme
 Uninstall with `pipx uninstall magic-pomme`.
 
 
+## Tray applet
+
+```sh
+magic-pomme-tray
+```
+
+Shows connected devices with battery, and quick toggles for Mac modifiers,
+accelerated scrolling, middle click and the top-row Fn mode. Toggles that are
+not yet writable are shown disabled with the reason, rather than failing
+silently or prompting for a password.
+
+PyQt6 rather than PySide6, because Debian ships `python3-pyqt6` and it is
+commonly already present. With a pipx install, let the venv see it:
+
+```sh
+pipx install --force --editable --system-site-packages ~/Documents/magic-pomme
+```
+
+To start it with the desktop, copy `packaging/magic-pomme-tray.service` to
+`~/.config/systemd/user/` and `systemctl --user enable --now
+magic-pomme-tray.service`.
+
+> The unit is ordered after `graphical-session.target`, **not**
+> `default.target`. With systemd user lingering enabled, `default.target` is
+> reached at boot before any desktop exists -- measured at 46 seconds before
+> the panel on the development machine -- so a tray applet started there would
+> find no tray. The applet also waits up to 90s for the panel to claim the
+> tray rather than exiting, so it survives losing the race anyway.
+
+### It is running but I see no icon
+
+Plasma hides unfamiliar tray items by default. Click the `^` chevron, or
+right-click the tray, choose *Configure System Tray* > *Entries*, and set
+magic-pomme to *Shown*.
+
+
 ## Setup
 
 The driver parameters are root-owned, but the GUI should never run as root and
