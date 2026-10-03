@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 
 from .devices import APPLE_VENDORS
@@ -157,22 +158,35 @@ def devices(apple_only: bool = False, detailed: bool = True) -> list[BluetoothDe
 def scan(seconds: int = 20, apple_only: bool = False) -> list[BluetoothDevice]:
     """Discover advertising devices, then return everything now known.
 
-    bluetoothctl needs its scan held open for the whole window, so this drives
-    it through stdin and lets the timeout expire rather than passing ``scan on``
-    as a one-shot argument.
+    bluetoothctl scans only while it is running, and it exits as soon as its
+    stdin reaches EOF. Passing the commands via subprocess.run(input=...) therefore
+    closes stdin straight away and the process dies in milliseconds without
+    ever scanning -- a silent no-op that looks like "nothing was found".
+    So the pipe is held open deliberately for the whole window.
     """
-    script = "agent KeyboardDisplay\ndefault-agent\npower on\nscan on\n"
+    proc = subprocess.Popen(
+        [_binary()],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
     try:
-        subprocess.run(
-            [_binary()],
-            input=script,
-            capture_output=True,
-            text=True,
-            timeout=seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        pass  # expected - the timeout *is* the scan duration
+        assert proc.stdin is not None
+        proc.stdin.write("agent KeyboardDisplay\ndefault-agent\npower on\nscan on\n")
+        proc.stdin.flush()
+        time.sleep(seconds)          # stdin stays open: this is the scan window
+        try:
+            proc.stdin.write("scan off\nquit\n")
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+    finally:
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
     return devices(apple_only=apple_only)
 
 
