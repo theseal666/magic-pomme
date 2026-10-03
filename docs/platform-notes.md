@@ -85,6 +85,40 @@ set `0`.
 id — **use that as the correlation key**, not the power_supply name, which is a
 MAC over Bluetooth and a serial over USB.
 
+### Open: Bluetooth battery reads zero on kernel 6.12.111
+
+Both an Apple Magic Keyboard with Touch ID and a Magic Mouse 2 report
+`POWER_SUPPLY_CAPACITY=0` indefinitely over Bluetooth on
+`6.12.111+deb13-amd64`, while the same devices on the same pairing reported
+real percentages (keyboard 32-34%) on `6.12.107+deb13-amd64` earlier the same
+day.
+
+What is ruled out:
+
+- Not a disconnect loop. `bluetoothd` logged no device events for the whole
+  boot, and the uhid transports kept their original instance numbers
+  (`.0007`, `.0008`), so the devices never re-enumerated.
+- Not a missing node. `PRESENT=1`, `ONLINE=1`, `SCOPE=Device`; the kernel
+  created the power supply and is polling it.
+- Not an error path. No HID, Bluetooth or battery messages in the kernel log.
+- Not transient. Flat zero across nine samples spanning several minutes of a
+  stable link.
+
+Leading hypothesis is a regression in the generic HID battery-strength path
+between 6.12.107 and 6.12.111. The competing explanation, not yet excluded, is
+that these devices answer the battery report only shortly after pairing and
+then go quiet, which fits the same timeline.
+
+To settle it, boot 6.12.107 and run `magic-pomme devices`. If the readings
+return, it is a regression worth reporting upstream, since it would affect
+every Apple Bluetooth peripheral rather than one machine.
+
+Until then `devices.Battery.unknown` treats capacity 0 as "no reading yet"
+rather than an empty battery: a device that is connected and moving the cursor
+is not at 0%, and a red empty bar on healthy hardware is a worse lie than
+admitting the value is unknown.
+
+
 ## Wayland limits
 
 - **No per-application remapping on KDE Wayland.** keyd's app-aware mapper
