@@ -42,8 +42,21 @@ class Battery:
         return self.status.lower() == "charging"
 
     @property
+    def unknown(self) -> bool:
+        """True when the kernel has no reading yet, rather than a flat battery.
+
+        Apple devices report battery over HID periodically, so after a
+        Bluetooth reconnect sysfs shows capacity 0 until the first report
+        lands -- UPower calls the same state "unknown". A device that is
+        connected and in use is not at 0%, so reporting an empty battery there
+        is simply wrong. A genuinely flat device powers off rather than
+        staying connected, which makes 0 safe to read as "not yet known".
+        """
+        return self.capacity == 0
+
+    @property
     def low(self) -> bool:
-        return self.capacity <= 20 and not self.charging
+        return not self.unknown and self.capacity <= 20 and not self.charging
 
 
 @dataclass

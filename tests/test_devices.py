@@ -55,3 +55,25 @@ class TestBattery:
     def test_charging_is_case_insensitive(self):
         assert devices.Battery(50, "charging").charging
         assert devices.Battery(50, "Charging").charging
+
+
+class TestBatteryUnknown:
+    """Zero means 'no report yet', not 'flat'.
+
+    After a Bluetooth reconnect the kernel shows capacity 0 until the first
+    HID battery report arrives. A device that is connected and in use is not
+    actually empty, so rendering a red 0% bar misreports a healthy device.
+    """
+
+    def test_zero_is_unknown_not_empty(self):
+        assert devices.Battery(0, "Discharging").unknown
+
+    def test_a_real_reading_is_not_unknown(self):
+        assert not devices.Battery(1, "Discharging").unknown
+        assert not devices.Battery(100, "Charging").unknown
+
+    def test_unknown_is_never_reported_as_low(self):
+        assert not devices.Battery(0, "Discharging").low
+
+    def test_a_genuinely_low_reading_still_flags(self):
+        assert devices.Battery(8, "Discharging").low

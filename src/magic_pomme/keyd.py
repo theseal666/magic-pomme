@@ -25,6 +25,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import session
+
 SOCKET = Path("/run/keyd.socket")
 GROUP = "keyd"
 BINARIES = ("keyd.rvaiya", "keyd")
@@ -63,7 +65,7 @@ class Readiness:
         if self.in_group_on_disk and not self.in_group_this_session:
             return (
                 f"you are in the {GROUP!r} group but this session predates it - "
-                f"log out and back in, or use: sg {GROUP} -c '...'"
+                f"{session.refresh_action()}, or use: sg {GROUP} -c '...'"
             )
         if not self.in_group_on_disk:
             return f"add yourself to the group: sudo usermod -aG {GROUP} $USER"

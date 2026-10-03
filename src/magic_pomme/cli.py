@@ -11,7 +11,8 @@ import os
 import shutil
 import sys
 
-from . import __version__, bluetooth, devices, drivers, keyd, permissions
+from . import (__version__, bluetooth, devices, drivers, keyd,
+               permissions, session)
 
 OK, BAD, WARN = "\033[32m", "\033[31m", "\033[33m"
 DIM, BOLD, OFF = "\033[2m", "\033[1m", "\033[0m"
@@ -41,7 +42,9 @@ def cmd_devices(_: argparse.Namespace) -> int:
             print(f"    module      {device.module}")
         if device.serial:
             print(f"    serial      {device.serial}")
-        if device.battery:
+        if device.battery and device.battery.unknown:
+            print(f"    battery     {DIM}awaiting first report since reconnect{OFF}")
+        elif device.battery:
             state = "charging" if device.battery.charging else device.battery.status.lower()
             print(f"    battery     {_bar(device.battery.capacity)} "
                   f"{device.battery.capacity}% ({state})")
@@ -192,8 +195,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         except Exception as error:  # noqa: BLE001 - surface the real cause
             print(f"  {BAD}{error}{OFF}", file=sys.stderr)
             return 1
-        print(f"\n  {OK}done{OFF} - log out and back in for group membership "
-              f"to take effect")
+        print(f"\n  {OK}done{OFF} - {session.refresh_hint()}")
         return 0
 
     report = permissions.status()
@@ -217,7 +219,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(f"  writable parameters  {len(report.writable)}/{total}")
 
     if report.needs_relogin:
-        print(f"\n  {WARN}log out and back in to pick up group membership{OFF}")
+        print(f"\n  {WARN}{session.refresh_hint()}{OFF}")
     elif not report.complete:
         print(f"\n  review:   magic-pomme setup --print")
         exe = sys.argv[0] if os.path.isabs(sys.argv[0]) else shutil.which("magic-pomme") or "magic-pomme"
