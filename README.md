@@ -144,6 +144,11 @@ swap is contained.
 
 ## Scope
 
+Every setting needed for a macOS-like desktop belongs here -- see
+[docs/mac-experience.md](docs/mac-experience.md) for the full inventory and
+what is still missing.
+
+
 - Profile switching: Mac mode / PC mode as one atomic change
 - Per-device battery for keyboard, mouse and trackpad
 - `hid_apple` knobs: `swap_ctrl_cmd`, `fnmode`, `iso_layout`

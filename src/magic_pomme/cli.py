@@ -12,7 +12,7 @@ import shutil
 import sys
 
 from . import (__version__, bluetooth, devices, drivers, keyd,
-               permissions, session)
+               permissions, plasma_input, session)
 
 OK, BAD, WARN = "\033[32m", "\033[31m", "\033[33m"
 DIM, BOLD, OFF = "\033[2m", "\033[1m", "\033[0m"
@@ -229,6 +229,27 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0 if report.complete else 1
 
 
+def cmd_scroll(args: argparse.Namespace) -> int:
+    pointers = plasma_input.pointers()
+    if not pointers:
+        print("  no Apple pointing devices found", file=sys.stderr)
+        return 1
+
+    for pointer in pointers:
+        if args.state is None:
+            current = plasma_input.natural_scroll(pointer)
+            label = {True: "on", False: "off", None: "not set (Plasma default)"}[current]
+            print(f"  {pointer}  natural scrolling: {label}")
+            continue
+        try:
+            plasma_input.set_natural_scroll(pointer, args.state == "on")
+        except (plasma_input.PlasmaToolsMissing, OSError) as error:
+            print(f"  {BAD}{error}{OFF}", file=sys.stderr)
+            return 1
+        print(f"  {OK}{pointer}: natural scrolling {args.state}{OFF}")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     _heading("devices")
     cmd_devices(args)
@@ -261,6 +282,11 @@ def main(argv: list[str] | None = None) -> int:
 
     subs.add_parser("keyd", help="keyd readiness for live remapping")
 
+    scroll = subs.add_parser(
+        "scroll", help="natural scrolling (macOS direction) for Apple pointers")
+    scroll.add_argument("state", nargs="?", choices=["on", "off"],
+                        help="omit to show the current setting")
+
     setup = subs.add_parser(
         "setup", help="one-time privilege setup so the GUI never needs root"
     )
@@ -288,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         "keyd": cmd_keyd,
         "bt": cmd_bt,
         "setup": cmd_setup,
+        "scroll": cmd_scroll,
     }
     if args.command in ("devices", "status", "keyd") and not hasattr(args, "module"):
         args.module = None

@@ -21,7 +21,7 @@ from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import devices, drivers, permissions, session
+from . import devices, drivers, permissions, plasma_input, session
 
 REFRESH_MS = 30_000
 BATTERY_INTERVAL_S = 180.0
@@ -133,6 +133,16 @@ class Tray(QSystemTrayIcon):
             )
             self._menu.addAction(action)
 
+        for pointer in plasma_input.pointers():
+            current = plasma_input.natural_scroll(pointer)
+            action = QAction(f"Natural scrolling - {pointer.name}",
+                             self._menu, checkable=True)
+            action.setChecked(bool(current))
+            action.triggered.connect(
+                lambda checked, pt=pointer: self._set_scroll(pt, checked)
+            )
+            self._menu.addAction(action)
+
         fn_value = drivers.read("hid_apple", "fnmode")
         if fn_value is not None:
             submenu = self._menu.addMenu("Top row")
@@ -188,6 +198,14 @@ class Tray(QSystemTrayIcon):
             if device.battery and not device.battery.unknown
         ]
         return "\n".join(parts) or "magic-pomme"
+
+    def _set_scroll(self, pointer: plasma_input.Pointer, enabled: bool) -> None:
+        try:
+            plasma_input.set_natural_scroll(pointer, enabled)
+        except (plasma_input.PlasmaToolsMissing, OSError) as error:
+            self.showMessage("magic-pomme", str(error),
+                             QSystemTrayIcon.MessageIcon.Warning, 5000)
+        self.refresh()
 
     def _write(self, module: str, param: str, value: int) -> None:
         try:
