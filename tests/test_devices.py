@@ -77,3 +77,32 @@ class TestBatteryUnknown:
 
     def test_a_genuinely_low_reading_still_flags(self):
         assert devices.Battery(8, "Discharging").low
+
+
+class TestBatteryIsOptional:
+    """Enumeration must not be hostage to the battery read.
+
+    Reading capacity makes the kernel request a HID report and wait for the
+    device; an unresponsive Bluetooth peripheral blocks the caller for about
+    ten seconds. That froze the tray applet's UI thread. Enumeration itself is
+    sub-millisecond, so the two must be separable.
+    """
+
+    def test_skipping_battery_does_not_call_the_blocking_read(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(devices, "batteries",
+                            lambda: called.append(True) or {})
+        devices.devices(with_battery=False)
+        assert not called, "batteries() must not be called when skipped"
+
+    def test_battery_read_happens_by_default(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(devices, "batteries",
+                            lambda: called.append(True) or {})
+        devices.devices()
+        assert called
+
+    def test_devices_still_enumerated_without_battery(self, monkeypatch):
+        monkeypatch.setattr(devices, "batteries", lambda: {})
+        without = devices.devices(with_battery=False)
+        assert all(device.battery is None for device in without)

@@ -17,13 +17,14 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from . import devices, drivers, permissions, session
 
 REFRESH_MS = 30_000
+BATTERY_INTERVAL_S = 180.0
 ASSETS = Path(__file__).parent / "assets"
 
 # Toggles worth reaching for from the panel. Everything else stays in the CLI:
@@ -40,6 +41,37 @@ FN_LABELS = {
 }
 
 
+class BatteryWorker(QThread):
+    """Reads batteries off the UI thread.
+
+    A battery read blocks in the kernel until the device answers or times out,
+    which is about ten seconds per unresponsive Bluetooth device. Doing that on
+    the Qt main thread froze the applet for roughly half of every refresh
+    cycle. Battery level also changes slowly, so it is polled far less often
+    than the menu is rebuilt.
+    """
+
+    updated = pyqtSignal(dict)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._stop = False
+
+    def run(self) -> None:
+        while not self._stop:
+            try:
+                self.updated.emit(devices.batteries())
+            except OSError:
+                pass
+            for _ in range(int(BATTERY_INTERVAL_S)):
+                if self._stop:
+                    return
+                time.sleep(1.0)
+
+    def stop(self) -> None:
+        self._stop = True
+
+
 class Tray(QSystemTrayIcon):
     def __init__(self, app: QApplication) -> None:
         super().__init__(QIcon(str(ASSETS / "logo-icon.svg")), app)
@@ -48,11 +80,21 @@ class Tray(QSystemTrayIcon):
         self.setContextMenu(self._menu)
         self.setToolTip("magic-pomme")
 
+        self._batteries: dict[str, devices.Battery] = {}
+        self._worker = BatteryWorker()
+        self._worker.updated.connect(self._on_batteries)
+        self._worker.start()
+        app.aboutToQuit.connect(self._worker.stop)
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._timer.start(REFRESH_MS)
 
         self.activated.connect(self._on_activated)
+        self.refresh()
+
+    def _on_batteries(self, readings: dict) -> None:
+        self._batteries = readings
         self.refresh()
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
@@ -62,7 +104,14 @@ class Tray(QSystemTrayIcon):
 
     def refresh(self) -> None:
         self._menu.clear()
-        found = devices.devices()
+        # with_battery=False keeps this off the blocking path; levels come
+        # from the worker thread via _on_batteries.
+        found = devices.devices(with_battery=False)
+        for device in found:
+            for hid_id in device.hid_ids:
+                if hid_id in self._batteries:
+                    device.battery = self._batteries[hid_id]
+                    break
         status = permissions.status()
 
         if not found:
@@ -119,7 +168,9 @@ class Tray(QSystemTrayIcon):
 
     @staticmethod
     def _device_label(device: devices.Device) -> str:
-        if device.battery and device.battery.unknown:
+        if device.battery is None:
+            charge = "battery reading..."
+        elif device.battery.unknown:
             charge = "battery unknown"
         elif device.battery:
             charge = f"{device.battery.capacity}%"

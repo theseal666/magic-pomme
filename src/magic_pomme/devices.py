@@ -118,6 +118,12 @@ def _uevent(path: Path) -> dict[str, str]:
 def batteries() -> dict[str, Battery]:
     """Map HID device id -> Battery.
 
+    **This can block for ~10 seconds per device.** Reading `capacity` makes the
+    kernel request a HID battery report, and a Bluetooth device that does not
+    answer is waited on until timeout (the reading thread sits in
+    `__uhid_report_queue_and_wait`). Never call this on a UI thread; see
+    `devices(with_battery=False)`.
+
     Keyed on the HID id rather than the power_supply name, because that name is
     a MAC address over Bluetooth and a serial number over USB. The
     power_supply `device` symlink resolves to the owning HID device, whose
@@ -139,14 +145,17 @@ def batteries() -> dict[str, Battery]:
     return found
 
 
-def devices(apple_only: bool = True) -> list[Device]:
+def devices(apple_only: bool = True, with_battery: bool = True) -> list[Device]:
     """Enumerate input devices, one entry per *physical* device.
 
     A single keyboard shows up as several HID devices (one per interface), so
     entries are merged on identity and the battery attached to whichever
     interface reports it.
+
+    Pass ``with_battery=False`` to skip the battery read, which blocks for
+    seconds per unresponsive Bluetooth device. Enumeration itself is fast.
     """
-    power = batteries()
+    power = batteries() if with_battery else {}
     merged: dict[tuple, Device] = {}
 
     if not HID_DEVICES.is_dir():

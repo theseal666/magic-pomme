@@ -119,6 +119,26 @@ is not at 0%, and a red empty bar on healthy hardware is a worse lie than
 admitting the value is unknown.
 
 
+### Reading a Bluetooth battery blocks for ~10 seconds
+
+A corollary of the zero-reading above, and more disruptive than the wrong
+number. Reading `/sys/class/power_supply/hid-*/capacity` makes the kernel
+request a HID battery report and **wait for the device**. When the device does
+not answer, the reading thread sits in `__uhid_report_queue_and_wait` until
+timeout. Measured on the affected machine:
+
+| call | time |
+|---|---|
+| read keyboard capacity | 9.95s |
+| read mouse capacity | 5.11s |
+| `devices(with_battery=True)` | 10.36s |
+| `devices(with_battery=False)` | 0.002s |
+
+Enumeration is four orders of magnitude faster than the battery read. Any UI
+must therefore read batteries on a worker thread, and any CLI should offer a
+way to skip it. The tray applet froze for roughly half of every refresh cycle
+before this was separated.
+
 ## Wayland limits
 
 - **No per-application remapping on KDE Wayland.** keyd's app-aware mapper

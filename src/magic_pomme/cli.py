@@ -28,8 +28,8 @@ def _bar(percent: int, width: int = 10) -> str:
     return f"{colour}{'#' * filled}{DIM}{'.' * (width - filled)}{OFF}"
 
 
-def cmd_devices(_: argparse.Namespace) -> int:
-    found = devices.devices()
+def cmd_devices(args: argparse.Namespace) -> int:
+    found = devices.devices(with_battery=not getattr(args, 'no_battery', False))
     if not found:
         print("  no Apple input devices found")
         return 1
@@ -246,7 +246,10 @@ def main(argv: list[str] | None = None) -> int:
     subs = parser.add_subparsers(dest="command")
 
     subs.add_parser("status", help="everything at once (default)")
-    subs.add_parser("devices", help="connected Apple input devices")
+    listing = subs.add_parser("devices", help="connected Apple input devices")
+    listing.add_argument(
+        "--no-battery", action="store_true",
+        help="skip battery, which blocks ~10s per unresponsive Bluetooth device")
 
     params = subs.add_parser("params", help="driver parameters")
     params.add_argument("module", nargs="?", help="hid_apple or hid_magicmouse")
