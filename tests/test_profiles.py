@@ -136,3 +136,37 @@ class TestProfileDefinition:
         payload = profiles._payload("kitty-mac.conf")
         assert "copy_or_interrupt" in payload
         assert "map super+c send_text all \\x03" in payload
+
+
+class TestSudoHomeResolution:
+    """Path.home() follows $HOME, which sudo resets to /root.
+
+    Using it meant every user-level action wrote into root's home and the
+    profile reported success while changing nothing the user would ever see.
+    The failure is silent, which is exactly why it needs a test.
+    """
+
+    def test_sudo_user_wins_over_root_home(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/root")
+        monkeypatch.setenv("SUDO_USER", "theseal")
+        assert profiles.target_user() == "theseal"
+        assert profiles.user_home() != Path("/root")
+        assert str(profiles.user_home()).startswith("/home/")
+
+    def test_user_paths_are_not_under_root(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/root")
+        monkeypatch.setenv("SUDO_USER", "theseal")
+        for action in profiles.mac().actions:
+            path = getattr(action, "path", None)
+            if path is None or str(path).startswith("/etc"):
+                continue
+            assert not str(path).startswith("/root"), f"{action.key} -> {path}"
+
+    def test_unknown_sudo_user_falls_back_without_raising(self, monkeypatch):
+        monkeypatch.setenv("SUDO_USER", "nosuchuser-zzz")
+        assert profiles.user_home()   # must not raise KeyError
+
+    def test_system_paths_stay_absolute(self, monkeypatch):
+        monkeypatch.setenv("SUDO_USER", "theseal")
+        keyd_action = next(a for a in profiles.mac().actions if a.key == "keyd-mac")
+        assert str(keyd_action.path) == "/etc/keyd/default.conf"

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -33,8 +34,44 @@ import subprocess
 
 from . import drivers, keyd, plasma_input
 
+def target_user() -> str:
+    """The real user, even under sudo."""
+    return os.environ.get("SUDO_USER") or os.environ.get("USER") or pwd.getpwuid(
+        os.getuid()).pw_name
+
+
+def user_home() -> Path:
+    """The real user's home.
+
+    Path.home() follows $HOME, which sudo resets to /root. Using it meant
+    every user-level action wrote into root's home and reported success while
+    changing nothing the user would ever see.
+    """
+    try:
+        return Path(pwd.getpwnam(target_user()).pw_dir)
+    except KeyError:
+        return Path.home()
+
+
+def _chown_to_user(path: Path) -> None:
+    """Give a file back to the user when we wrote it as root."""
+    if os.geteuid() != 0:
+        return
+    try:
+        entry = pwd.getpwnam(target_user())
+    except KeyError:
+        return
+    try:
+        os.chown(path, entry.pw_uid, entry.pw_gid)
+        for parent in (path.parent, path.parent.parent):
+            if str(parent).startswith(str(user_home())) and parent.exists():
+                os.chown(parent, entry.pw_uid, entry.pw_gid)
+    except OSError:
+        pass
+
+
 STATE_DIR = Path(
-    os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")
+    os.environ.get("XDG_STATE_HOME", user_home() / ".local/state")
 ) / "magic-pomme"
 STATE_FILE = STATE_DIR / "state.json"
 BACKUP_DIR = STATE_DIR / "backups"
@@ -192,6 +229,7 @@ class ManagedFile:
                 state.record(self.key, {"existed": False, "path": str(self.path)})
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(self.content)
+        _chown_to_user(self.path)
 
     def revert(self, state: State) -> None:
         record = state.recall(self.key)
@@ -291,9 +329,19 @@ def _kglobalaccel(action: str) -> None:
     also resolves conflicts on its own, so reassigning one key can silently
     clear another.
     """
-    for unit in ("plasma-kglobalaccel.service",):
-        subprocess.run(["systemctl", "--user", action, unit],
-                       capture_output=True, check=False, timeout=15)
+    unit = "plasma-kglobalaccel.service"
+    command = ["systemctl", "--user", action, unit]
+    if os.geteuid() == 0:
+        # `systemctl --user` as root targets root's own manager, not the
+        # desktop user's, so it would stop a daemon nobody is running.
+        user = target_user()
+        try:
+            uid = pwd.getpwnam(user).pw_uid
+        except KeyError:
+            return
+        command = ["sudo", "-u", user,
+                   f"XDG_RUNTIME_DIR=/run/user/{uid}", *command]
+    subprocess.run(command, capture_output=True, check=False, timeout=15)
 
 
 @dataclass
@@ -311,7 +359,7 @@ class KdeShortcuts:
     activation: str = RELOGIN
     needs_root: bool = False
     path: Path = field(
-        default_factory=lambda: Path.home() / ".config/kglobalshortcutsrc"
+        default_factory=lambda: user_home() / ".config/kglobalshortcutsrc"
     )
 
     def _current(self) -> dict[str, dict[str, str]]:
@@ -400,6 +448,7 @@ class KdeShortcuts:
                 )
                 text = text.rstrip("\n") + f"\n\n[{section}]\n{block}"
         self.path.write_text(text)
+        _chown_to_user(self.path)
 
 
 def _payload(name: str) -> str:
@@ -408,7 +457,7 @@ def _payload(name: str) -> str:
 
 def mac() -> Profile:
     """The macOS-like bundle."""
-    home = Path.home()
+    home = user_home()
     return Profile(
         name="mac",
         description="macOS keyboard, mouse and shortcuts",
