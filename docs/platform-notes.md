@@ -85,59 +85,40 @@ set `0`.
 id — **use that as the correlation key**, not the power_supply name, which is a
 MAC over Bluetooth and a serial over USB.
 
-### Open: Bluetooth battery reads zero on kernel 6.12.111
+### Bluetooth battery is unavailable for a while after pairing, then works
 
-Both an Apple Magic Keyboard with Touch ID and a Magic Mouse 2 report
-`POWER_SUPPLY_CAPACITY=0` indefinitely over Bluetooth on
-`6.12.111+deb13-amd64`, while the same devices on the same pairing reported
-real percentages (keyboard 32-34%) on `6.12.107+deb13-amd64` earlier the same
-day.
+**Resolved, and the first explanation was wrong.** It was recorded here as a
+probable regression between kernel 6.12.107 and 6.12.111. It is not.
 
-What is ruled out:
+Observed on 2026-10-03, shortly after pairing, on 6.12.111:
 
-- Not a disconnect loop. `bluetoothd` logged no device events for the whole
-  boot, and the uhid transports kept their original instance numbers
-  (`.0007`, `.0008`), so the devices never re-enumerated.
-- Not a missing node. `PRESENT=1`, `ONLINE=1`, `SCOPE=Device`; the kernel
-  created the power supply and is polling it.
-- Not an error path. No HID, Bluetooth or battery messages in the kernel log.
-- Not transient. Flat zero across twenty samples over fifteen minutes, with
-  both devices connected and in active use throughout.
+- Both devices reported `POWER_SUPPLY_CAPACITY=0` indefinitely, flat across
+  twenty samples over fifteen minutes on a stable link.
+- Reading `capacity` blocked for 9.95s (keyboard) and 5.11s (mouse), with the
+  reading thread in `__uhid_report_queue_and_wait`.
 
-Leading hypothesis is a regression in the generic HID battery-strength path
-between 6.12.107 and 6.12.111. The competing explanation, not yet excluded, is
-that these devices answer the battery report only shortly after pairing and
-then go quiet, which fits the same timeline.
+Observed on 2026-10-08, **same kernel, same uninterrupted boot, same
+pairing**:
 
-To settle it, boot 6.12.107 and run `magic-pomme devices`. If the readings
-return, it is a regression worth reporting upstream, since it would affect
-every Apple Bluetooth peripheral rather than one machine.
+- Both devices report 95%.
+- A full `devices()` call with battery takes 0.2s, down from 10.4s.
 
-Until then `devices.Battery.unknown` treats capacity 0 as "no reading yet"
-rather than an empty battery: a device that is connected and moving the cursor
-is not at 0%, and a red empty bar on healthy hardware is a worse lie than
-admitting the value is unknown.
+Nothing changed but elapsed time, so neither the kernel version nor "these
+devices only answer shortly after pairing" survives contact with the evidence
+-- the latter is backwards. What actually happens is that an Apple device
+freshly paired over Bluetooth does not answer the HID battery-strength report
+for some time, and every read waits out the timeout until it starts to. How
+long is unmeasured; it was under five days and over one hour.
 
+Two consequences hold regardless of the cause, and both remain worth keeping:
 
-### Reading a Bluetooth battery blocks for ~10 seconds
-
-A corollary of the zero-reading above, and more disruptive than the wrong
-number. Reading `/sys/class/power_supply/hid-*/capacity` makes the kernel
-request a HID battery report and **wait for the device**. When the device does
-not answer, the reading thread sits in `__uhid_report_queue_and_wait` until
-timeout. Measured on the affected machine:
-
-| call | time |
-|---|---|
-| read keyboard capacity | 9.95s |
-| read mouse capacity | 5.11s |
-| `devices(with_battery=True)` | 10.36s |
-| `devices(with_battery=False)` | 0.002s |
-
-Enumeration is four orders of magnitude faster than the battery read. Any UI
-must therefore read batteries on a worker thread, and any CLI should offer a
-way to skip it. The tray applet froze for roughly half of every refresh cycle
-before this was separated.
+- **Never read batteries on a UI thread.** The blocking window is real,
+  reachable by anyone who has just paired a device, and ten seconds of frozen
+  UI is indistinguishable from a crash. `devices(with_battery=False)` is
+  0.002s against 10.4s.
+- **Zero means "no reading yet", not "flat".** A device that is connected and
+  moving the cursor is not empty, and this is exactly the window in which a
+  naive reader would draw a red 0% bar on fully charged hardware.
 
 ## Wayland limits
 
