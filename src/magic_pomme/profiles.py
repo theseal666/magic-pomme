@@ -110,6 +110,12 @@ class State:
     def save(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         STATE_FILE.write_text(json.dumps(self.data, indent=2, sort_keys=True))
+        # Written as root during a sudo apply, but it lives in the user's home
+        # and a later unprivileged revert has to update it.
+        _chown_to_user(STATE_FILE)
+        _chown_to_user(STATE_DIR)
+        if BACKUP_DIR.exists():
+            _chown_to_user(BACKUP_DIR)
 
     def record(self, key: str, payload: dict) -> None:
         self.data.setdefault("actions", {})[key] = {
