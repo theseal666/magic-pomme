@@ -64,3 +64,34 @@ class TestNaturalScrollParsing:
             raise plasma_input.PlasmaToolsMissing("nope")
         monkeypatch.setattr(plasma_input, "_tool", boom)
         assert plasma_input.natural_scroll(_mouse()) is None
+
+
+class TestSudoHandling:
+    """kreadconfig6/kwriteconfig6 resolve config through $HOME.
+
+    Run as root they read and write /root/.config/kcminputrc, which KWin never
+    looks at, and report success -- the same silent class of failure that made
+    the profile appear to apply while changing nothing.
+    """
+
+    def test_unprivileged_command_is_unchanged(self, monkeypatch):
+        monkeypatch.setattr(plasma_input.os, "geteuid", lambda: 1000)
+        assert plasma_input._as_user(["kreadconfig6"]) == ["kreadconfig6"]
+
+    def test_root_with_sudo_user_drops_privilege(self, monkeypatch):
+        monkeypatch.setattr(plasma_input.os, "geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", "theseal")
+        command = plasma_input._as_user(["kwriteconfig6"])
+        assert command[:3] == ["sudo", "-u", "theseal"]
+        assert any(part.startswith("HOME=/home/") for part in command)
+        assert not any(part == "HOME=/root" for part in command)
+
+    def test_root_without_sudo_user_is_left_alone(self, monkeypatch):
+        monkeypatch.setattr(plasma_input.os, "geteuid", lambda: 0)
+        monkeypatch.delenv("SUDO_USER", raising=False)
+        assert plasma_input._as_user(["kreadconfig6"]) == ["kreadconfig6"]
+
+    def test_unknown_sudo_user_does_not_raise(self, monkeypatch):
+        monkeypatch.setattr(plasma_input.os, "geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", "nosuchuser-zzz")
+        assert plasma_input._as_user(["kreadconfig6"]) == ["kreadconfig6"]

@@ -15,6 +15,8 @@ that the change only takes effect at the next login.
 
 from __future__ import annotations
 
+import os
+import pwd
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -79,6 +81,26 @@ def pointers(apple_only: bool = True) -> list[Pointer]:
     return list(found.values())
 
 
+def _as_user(command: list[str]) -> list[str]:
+    """Run a KConfig tool as the real user.
+
+    kreadconfig6/kwriteconfig6 resolve the config through $HOME, which sudo
+    resets to /root. Run as root they would read and write root's
+    kcminputrc -- a file KWin never looks at -- and report success.
+    """
+    if os.geteuid() != 0:
+        return command
+    user = os.environ.get("SUDO_USER")
+    if not user:
+        return command
+    try:
+        entry = pwd.getpwnam(user)
+    except KeyError:
+        return command
+    return ["sudo", "-u", user, f"HOME={entry.pw_dir}",
+            f"XDG_RUNTIME_DIR=/run/user/{entry.pw_uid}", *command]
+
+
 def _tool(name: str) -> str:
     for candidate in (f"{name}6", f"{name}5", name):
         if path := shutil.which(candidate):
@@ -97,8 +119,8 @@ def natural_scroll(pointer: Pointer) -> bool | None:
     """Current setting, or None when KWin has never been told."""
     try:
         done = subprocess.run(
-            [_tool("kreadconfig"), "--file", CONFIG, *_group_args(pointer),
-             "--key", KEY],
+            _as_user([_tool("kreadconfig"), "--file", CONFIG,
+                      *_group_args(pointer), "--key", KEY]),
             capture_output=True, text=True, timeout=10, check=False,
         )
     except (PlasmaToolsMissing, OSError, subprocess.SubprocessError):
@@ -110,8 +132,9 @@ def natural_scroll(pointer: Pointer) -> bool | None:
 def set_natural_scroll(pointer: Pointer, enabled: bool) -> None:
     """Write the setting and make KWin pick it up immediately."""
     subprocess.run(
-        [_tool("kwriteconfig"), "--file", CONFIG, *_group_args(pointer),
-         "--key", KEY, "true" if enabled else "false"],
+        _as_user([_tool("kwriteconfig"), "--file", CONFIG,
+                  *_group_args(pointer), "--key", KEY,
+                  "true" if enabled else "false"]),
         capture_output=True, text=True, timeout=10, check=True,
     )
     reconfigure()
@@ -122,7 +145,8 @@ def reconfigure() -> bool:
     for tool in ("qdbus6", "qdbus"):
         if path := shutil.which(tool):
             done = subprocess.run(
-                [path, "org.kde.KWin", "/KWin", "org.kde.KWin.reconfigure"],
+                _as_user([path, "org.kde.KWin", "/KWin",
+                          "org.kde.KWin.reconfigure"]),
                 capture_output=True, text=True, timeout=10, check=False,
             )
             return done.returncode == 0
