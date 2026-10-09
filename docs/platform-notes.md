@@ -85,40 +85,40 @@ set `0`.
 id — **use that as the correlation key**, not the power_supply name, which is a
 MAC over Bluetooth and a serial over USB.
 
-### Bluetooth battery is unavailable for a while after pairing, then works
+### Bluetooth battery reporting is intermittent
 
-**Resolved, and the first explanation was wrong.** It was recorded here as a
-probable regression between kernel 6.12.107 and 6.12.111. It is not.
+Apple Bluetooth peripherals answer the HID battery-strength report
+unreliably. This has now been explained wrong twice here; what follows is the
+observation log rather than another theory.
 
-Observed on 2026-10-03, shortly after pairing, on 6.12.111:
+| date | kernel | reading | read time |
+|---|---|---|---|
+| 2026-10-03, hours after pairing | 6.12.111 | `capacity` 0, flat for 15 min | 9.95s / 5.11s |
+| 2026-10-08 | 6.12.111 | 95% on both | 0.2s |
+| 2026-10-09 | 6.12.111 | read fails, `ENODATA` | 5.2s / 5.1s |
 
-- Both devices reported `POWER_SUPPLY_CAPACITY=0` indefinitely, flat across
-  twenty samples over fifteen minutes on a stable link.
-- Reading `capacity` blocked for 9.95s (keyboard) and 5.11s (mouse), with the
-  reading thread in `__uhid_report_queue_and_wait`.
+Same kernel, same pairing, same devices throughout. Discarded along the way:
+a regression between 6.12.107 and 6.12.111 (the same kernel later worked);
+"only answers shortly after pairing" (backwards); and "starts working once
+settled" (it stopped again). The honest description is that it is
+intermittent on a timescale of hours to days, cause unknown.
 
-Observed on 2026-10-08, **same kernel, same uninterrupted boot, same
-pairing**:
+Three states must be distinguished, because conflating them produces visible
+lies about healthy hardware:
 
-- Both devices report 95%.
-- A full `devices()` call with battery takes 0.2s, down from 10.4s.
+| sysfs | meaning | must not render as |
+|---|---|---|
+| no node | device has no battery | 0% |
+| `capacity` 0 | no report yet | flat |
+| read fails `ENODATA` | device refused to answer | flat, or "still loading" |
 
-Nothing changed but elapsed time, so neither the kernel version nor "these
-devices only answer shortly after pairing" survives contact with the evidence
--- the latter is backwards. What actually happens is that an Apple device
-freshly paired over Bluetooth does not answer the HID battery-strength report
-for some time, and every read waits out the timeout until it starts to. How
-long is unmeasured; it was under five days and over one hour.
+`Battery.capacity` is -1 for the third case, so a device that will not answer
+is reported as "not reported" rather than dropped from the results -- dropping
+it left the UI saying "reading..." indefinitely with no way to tell it from a
+slow first read.
 
-Two consequences hold regardless of the cause, and both remain worth keeping:
-
-- **Never read batteries on a UI thread.** The blocking window is real,
-  reachable by anyone who has just paired a device, and ten seconds of frozen
-  UI is indistinguishable from a crash. `devices(with_battery=False)` is
-  0.002s against 10.4s.
-- **Zero means "no reading yet", not "flat".** A device that is connected and
-  moving the cursor is not empty, and this is exactly the window in which a
-  naive reader would draw a red 0% bar on fully charged hardware.
+The read blocks for 5-10s in both failing states, which is why battery must
+never be read on a UI thread. See `devices(with_battery=False)`.
 
 ## Wayland limits
 

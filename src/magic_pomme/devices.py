@@ -32,7 +32,14 @@ _HID_ID = re.compile(r"^([0-9a-fA-F]+):([0-9a-fA-F]+):([0-9a-fA-F]+)$")
 
 @dataclass(frozen=True)
 class Battery:
-    """A HID device's battery, as the kernel reports it."""
+    """A HID device's battery, as the kernel reports it.
+
+    ``capacity`` is -1 when the node exists but the device did not answer.
+    Apple Bluetooth peripherals do this intermittently: reads return ENODATA
+    ("No data available") after a timeout, for hours at a stretch, then start
+    working again. That is genuinely different from a flat battery and from
+    having no battery at all, and the three must not be conflated.
+    """
 
     capacity: int
     status: str
@@ -40,6 +47,11 @@ class Battery:
     @property
     def charging(self) -> bool:
         return self.status.lower() == "charging"
+
+    @property
+    def unavailable(self) -> bool:
+        """The device refused to answer; there is no value to show."""
+        return self.capacity < 0
 
     @property
     def unknown(self) -> bool:
@@ -52,11 +64,11 @@ class Battery:
         is simply wrong. A genuinely flat device powers off rather than
         staying connected, which makes 0 safe to read as "not yet known".
         """
-        return self.capacity == 0
+        return self.capacity == 0 or self.unavailable
 
     @property
     def low(self) -> bool:
-        return not self.unknown and self.capacity <= 20 and not self.charging
+        return not self.unknown and 0 <= self.capacity <= 20 and not self.charging
 
 
 @dataclass
@@ -134,14 +146,21 @@ def batteries() -> dict[str, Battery]:
         return found
 
     for supply in POWER_SUPPLY.iterdir():
-        capacity = _read(supply / "capacity")
-        if not capacity.isdigit():
+        if not (supply / "capacity").exists():
             continue
         try:
             owner = (supply / "device").resolve(strict=True).name
         except OSError:
             continue
-        found[owner] = Battery(int(capacity), _read(supply / "status") or "unknown")
+        capacity = _read(supply / "capacity")
+        if capacity.isdigit():
+            found[owner] = Battery(int(capacity),
+                                   _read(supply / "status") or "unknown")
+        else:
+            # The node is there but the read failed (ENODATA). Report that,
+            # rather than dropping the device and leaving the UI to show
+            # "reading..." forever.
+            found[owner] = Battery(-1, "unavailable")
     return found
 
 

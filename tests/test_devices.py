@@ -106,3 +106,31 @@ class TestBatteryIsOptional:
         monkeypatch.setattr(devices, "batteries", lambda: {})
         without = devices.devices(with_battery=False)
         assert all(device.battery is None for device in without)
+
+
+class TestBatteryUnavailable:
+    """ENODATA is a third state, distinct from flat and from absent.
+
+    Apple Bluetooth peripherals intermittently refuse the battery report:
+    reads fail with "No data available" after a timeout, for hours, then
+    recover. Dropping those devices from the result left the UI saying
+    "reading..." forever with no way to tell it apart from a slow first read.
+    """
+
+    def test_negative_capacity_means_unavailable(self):
+        assert devices.Battery(-1, "unavailable").unavailable
+
+    def test_a_real_reading_is_available(self):
+        assert not devices.Battery(95, "Discharging").unavailable
+
+    def test_unavailable_counts_as_unknown_for_display(self):
+        assert devices.Battery(-1, "unavailable").unknown
+
+    def test_unavailable_is_never_reported_as_low(self):
+        # Otherwise a device that simply will not answer looks flat.
+        assert not devices.Battery(-1, "unavailable").low
+
+    def test_zero_is_still_unknown_not_unavailable(self):
+        zero = devices.Battery(0, "Discharging")
+        assert zero.unknown
+        assert not zero.unavailable

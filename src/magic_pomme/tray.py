@@ -86,8 +86,14 @@ class Tray(QSystemTrayIcon):
         self._worker.start()
         app.aboutToQuit.connect(self._worker.stop)
 
+        # Rebuilding the menu on a timer races Plasma's DBusMenu exporter,
+        # which logs "Condition failed: menu" and can serve an empty layout.
+        # Building it only when it is about to be shown removes the race and
+        # the pointless work.
+        self._menu.aboutToShow.connect(self.refresh)
+
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self.refresh)
+        self._timer.timeout.connect(self._refresh_tooltip)
         self._timer.start(REFRESH_MS)
 
         self.activated.connect(self._on_activated)
@@ -95,7 +101,16 @@ class Tray(QSystemTrayIcon):
 
     def _on_batteries(self, readings: dict) -> None:
         self._batteries = readings
-        self.refresh()
+        self._refresh_tooltip()
+
+    def _refresh_tooltip(self) -> None:
+        found = devices.devices(with_battery=False)
+        for device in found:
+            for hid_id in device.hid_ids:
+                if hid_id in self._batteries:
+                    device.battery = self._batteries[hid_id]
+                    break
+        self.setToolTip(self._tooltip(found))
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -180,6 +195,8 @@ class Tray(QSystemTrayIcon):
     def _device_label(device: devices.Device) -> str:
         if device.battery is None:
             charge = "battery reading..."
+        elif device.battery.unavailable:
+            charge = "battery not reported"
         elif device.battery.unknown:
             charge = "battery unknown"
         elif device.battery:
@@ -196,6 +213,7 @@ class Tray(QSystemTrayIcon):
             f"{device.name}: {device.battery.capacity}%"
             for device in found
             if device.battery and not device.battery.unknown
+               and not device.battery.unavailable
         ]
         return "\n".join(parts) or "magic-pomme"
 
