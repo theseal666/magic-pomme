@@ -65,6 +65,30 @@ set `0`.
   through the HID report and appears in `/sys/class/power_supply/`. BlueZ
   `Experimental = true` is **not** required, contrary to common advice.
 - `trust` is required for auto-reconnect after reboot; `pair` alone is not enough.
+  Verify it by reading the flag back: a `trust` issued while pairing is still in
+  flight prints `trust succeeded` and does not stick.
+- **`Paired: yes` does not mean bonded.** Without a stored link key BlueZ
+  refuses the HID connection and logs, to the journal only:
+
+  ```
+  bluetoothd: profiles/input/device.c:hidp_add_connection()
+      Rejected connection from !bonded device /org/bluez/hci0/dev_XX_XX_...
+  ```
+
+  The device then reports paired, trusted *and* connected while no input device
+  exists. `bluetoothctl info` shows `Bonded: no` and nothing else hints at it.
+  The only fix is `disconnect` → `remove` → scan → `pair` again; pairing on top
+  of the half-paired state fails the same way every time. The scan is not
+  optional, because `remove` drops the device object and pairing an unknown
+  address fails with a bare `not available`. Note that `Bonded` only exists
+  from BlueZ 5.65; on older stacks `Paired` carries the whole meaning.
+- The honest test of a pairing is whether the kernel attached the device, not
+  what BlueZ reports: look for the Bluetooth address as the HID device serial
+  (`HID_UNIQ`), lowercased.
+- **A flat battery looks exactly like broken Bluetooth.** A discharged Magic
+  device does not advertise at all, and neither does one connected over USB —
+  so charge it, unplug it, *then* pair. A nearby Mac or iPad that knows the
+  device will also reclaim it before a scan sees it.
 - The `apple` driver binds the Bluetooth instance too, so `swap_ctrl_cmd`
   applies identically over USB and BT.
 - **USB autosuspend on the Bluetooth adapter causes input lag.** Presents as

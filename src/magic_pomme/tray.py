@@ -14,6 +14,7 @@ or prompting for a password.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -21,10 +22,17 @@ from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import devices, drivers, permissions, plasma_input, session
+from . import (bluetooth, devices, drivers, permissions, plasma_input,
+               session)
 
 REFRESH_MS = 30_000
 BATTERY_INTERVAL_S = 180.0
+# A device paired while the applet runs has no battery reading yet. Asking for
+# one early is cheap; asking on every menu open is not, because an unresponsive
+# Bluetooth device blocks the read for ten seconds.
+BATTERY_WAKE_FLOOR_S = 15.0
+SCAN_SECONDS = 20
+BT_CHECK_TTL_S = 60.0
 ASSETS = Path(__file__).parent / "assets"
 
 # Toggles worth reaching for from the panel. Everything else stays in the CLI:
@@ -56,6 +64,8 @@ class BatteryWorker(QThread):
     def __init__(self) -> None:
         super().__init__()
         self._stop = False
+        self._wake = threading.Event()
+        self._last_poll = 0.0
 
     def run(self) -> None:
         while not self._stop:
@@ -63,13 +73,64 @@ class BatteryWorker(QThread):
                 self.updated.emit(devices.batteries())
             except OSError:
                 pass
-            for _ in range(int(BATTERY_INTERVAL_S)):
-                if self._stop:
-                    return
-                time.sleep(1.0)
+            self._last_poll = time.monotonic()
+            self._wake.wait(BATTERY_INTERVAL_S)
+            self._wake.clear()
+
+    def poll_now(self) -> None:
+        """Read batteries before the next scheduled poll.
+
+        Without this, a device paired just after a poll shows
+        "battery reading..." for the rest of the three-minute interval, which
+        reads as a broken applet rather than as a pending read. The floor stops
+        a menu that is opened repeatedly from queueing blocking reads.
+        """
+        if time.monotonic() - self._last_poll < BATTERY_WAKE_FLOOR_S:
+            return
+        self._wake.set()
 
     def stop(self) -> None:
         self._stop = True
+        self._wake.set()
+
+
+class ScanWorker(QThread):
+    """Scans off the UI thread: a scan window is twenty blocking seconds."""
+
+    scanned = pyqtSignal(list)
+
+    def __init__(self, seconds: int = SCAN_SECONDS) -> None:
+        super().__init__()
+        self._seconds = seconds
+
+    def run(self) -> None:
+        try:
+            found = bluetooth.scan(self._seconds, apple_only=True)
+        except (bluetooth.BluetoothUnavailable, OSError):
+            found = []
+        self.scanned.emit(found)
+
+
+class PairWorker(QThread):
+    """Runs pair -> trust -> connect -> verify, which blocks for up to a minute.
+
+    Recovering a device that paired without a link key costs a second scan on
+    top of that, so this cannot be anywhere near the UI thread.
+    """
+
+    paired = pyqtSignal(str, str, bool, str)   # mac, name, ok, message
+
+    def __init__(self, mac: str, name: str) -> None:
+        super().__init__()
+        self._mac = mac
+        self._name = name
+
+    def run(self) -> None:
+        try:
+            ok, message = bluetooth.setup(self._mac)
+        except (bluetooth.BluetoothUnavailable, OSError) as error:
+            ok, message = False, str(error)
+        self.paired.emit(self._mac, self._name, ok, message)
 
 
 class Tray(QSystemTrayIcon):
@@ -84,7 +145,14 @@ class Tray(QSystemTrayIcon):
         self._worker = BatteryWorker()
         self._worker.updated.connect(self._on_batteries)
         self._worker.start()
-        app.aboutToQuit.connect(self._worker.stop)
+        app.aboutToQuit.connect(self._stop_workers)
+
+        self._bt_found: list[bluetooth.BluetoothDevice] = []
+        self._scan_worker: ScanWorker | None = None
+        self._pair_worker: PairWorker | None = None
+        self._pairing = ""
+        self._bt_available = False
+        self._bt_checked = 0.0
 
         # Rebuilding the menu on a timer races Plasma's DBusMenu exporter,
         # which logs "Condition failed: menu" and can serve an empty layout.
@@ -103,14 +171,25 @@ class Tray(QSystemTrayIcon):
         self._batteries = readings
         self._refresh_tooltip()
 
-    def _refresh_tooltip(self) -> None:
+    def _found_with_batteries(self) -> list[devices.Device]:
+        """Devices, with the worker thread's last battery readings attached.
+
+        with_battery=False keeps enumeration off the blocking path. A device
+        with no reading yet is almost always one paired since the last poll, so
+        ask for an early one rather than leaving it at "battery reading...".
+        """
         found = devices.devices(with_battery=False)
         for device in found:
             for hid_id in device.hid_ids:
                 if hid_id in self._batteries:
                     device.battery = self._batteries[hid_id]
                     break
-        self.setToolTip(self._tooltip(found))
+        if any(device.battery is None for device in found):
+            self._worker.poll_now()
+        return found
+
+    def _refresh_tooltip(self) -> None:
+        self.setToolTip(self._tooltip(self._found_with_batteries()))
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -119,14 +198,7 @@ class Tray(QSystemTrayIcon):
 
     def refresh(self) -> None:
         self._menu.clear()
-        # with_battery=False keeps this off the blocking path; levels come
-        # from the worker thread via _on_batteries.
-        found = devices.devices(with_battery=False)
-        for device in found:
-            for hid_id in device.hid_ids:
-                if hid_id in self._batteries:
-                    device.battery = self._batteries[hid_id]
-                    break
+        found = self._found_with_batteries()
         status = permissions.status()
 
         if not found:
@@ -179,9 +251,123 @@ class Tray(QSystemTrayIcon):
             self._menu.addAction(hint).setEnabled(False)
 
         self._menu.addSeparator()
+        self._add_pairing_menu()
+
+        self._menu.addSeparator()
         quit_action = QAction("Quit", self._menu)
         quit_action.triggered.connect(self._app.quit)
         self._menu.addAction(quit_action)
+
+    def _bluetooth_ok(self) -> bool:
+        """Whether an adapter is powered, cached.
+
+        refresh() runs on the UI thread every time the menu opens, and
+        bluetooth.available() is a subprocess. The TTL is there so an adapter
+        switched on after startup still shows up without a restart.
+        """
+        now = time.monotonic()
+        if now - self._bt_checked > BT_CHECK_TTL_S:
+            try:
+                self._bt_available = bluetooth.available()
+            except OSError:
+                self._bt_available = False
+            self._bt_checked = now
+        return self._bt_available
+
+    def _add_pairing_menu(self) -> None:
+        """Scan and pair from the panel, instead of a trip to bluetoothctl."""
+        if not self._bluetooth_ok():
+            self._menu.addAction("No powered Bluetooth adapter").setEnabled(False)
+            return
+
+        submenu = self._menu.addMenu("Pair a device")
+        if self._pairing:
+            submenu.addAction(f"Pairing {self._pairing}...").setEnabled(False)
+            return
+        if self._scan_worker is not None and self._scan_worker.isRunning():
+            submenu.addAction(f"Scanning {SCAN_SECONDS}s...").setEnabled(False)
+            return
+
+        action = QAction("Scan for devices", submenu)
+        action.triggered.connect(self._start_scan)
+        submenu.addAction(action)
+        submenu.addSeparator()
+
+        if not self._bt_found:
+            submenu.addAction("Unplug it and power-cycle the "
+                              "switch first").setEnabled(False)
+            return
+
+        for device in self._bt_found:
+            if device.ready:
+                submenu.addAction(
+                    f"{device.name or device.mac}  -  already paired"
+                ).setEnabled(False)
+                continue
+            entry = QAction(self._pair_label(device), submenu)
+            entry.triggered.connect(
+                lambda _checked, d=device: self._start_pair(d)
+            )
+            submenu.addAction(entry)
+
+    @staticmethod
+    def _pair_label(device: bluetooth.BluetoothDevice) -> str:
+        name = device.name or device.mac
+        if device.half_paired:
+            # Paired with no link key: pairing again on top of this always
+            # fails, so say what the entry will actually do.
+            return f"{name}  -  pair again (no link key)"
+        signal = f"  {device.rssi} dBm" if device.rssi is not None else ""
+        return f"{name}{signal}"
+
+    def _start_scan(self) -> None:
+        if self._scan_worker is not None and self._scan_worker.isRunning():
+            return
+        self._scan_worker = ScanWorker()
+        self._scan_worker.scanned.connect(self._on_scanned)
+        self._scan_worker.start()
+        self.showMessage("magic-pomme",
+                         f"Scanning {SCAN_SECONDS}s for Apple devices",
+                         QSystemTrayIcon.MessageIcon.Information, 3000)
+
+    def _on_scanned(self, found: list) -> None:
+        self._bt_found = found
+        if found:
+            message = f"{len(found)} found - see Pair a device"
+        else:
+            message = ("Nothing found. Magic devices do not advertise while on "
+                       "USB - unplug it and power-cycle the switch.")
+        self.showMessage("magic-pomme", message,
+                         QSystemTrayIcon.MessageIcon.Information, 6000)
+
+    def _start_pair(self, device: bluetooth.BluetoothDevice) -> None:
+        if self._pairing:
+            return
+        self._pairing = device.name or device.mac
+        self._pair_worker = PairWorker(device.mac, device.name)
+        self._pair_worker.paired.connect(self._on_paired)
+        self._pair_worker.start()
+        self.showMessage("magic-pomme", f"Pairing {self._pairing}...",
+                         QSystemTrayIcon.MessageIcon.Information, 4000)
+
+    def _on_paired(self, mac: str, name: str, ok: bool, message: str) -> None:
+        self._pairing = ""
+        self.showMessage(
+            "magic-pomme", f"{name or mac}: {message}",
+            QSystemTrayIcon.MessageIcon.Information if ok
+            else QSystemTrayIcon.MessageIcon.Warning,
+            8000,
+        )
+        if ok:
+            self._bt_found = [d for d in self._bt_found if d.mac != mac]
+            self._worker.poll_now()
+        self._refresh_tooltip()
+
+    def _stop_workers(self) -> None:
+        self._worker.stop()
+        for worker in (self._scan_worker, self._pair_worker):
+            if worker is not None and worker.isRunning():
+                worker.wait(2000)
 
     @staticmethod
     def _setup_hint(status: permissions.Status) -> str:

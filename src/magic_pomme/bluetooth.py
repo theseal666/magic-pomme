@@ -13,9 +13,22 @@ Pairing an Apple device, in order:
 3. Make sure any previously paired Mac nearby has Bluetooth off, or it will
    reclaim the device before the scan sees it.
 4. ``scan()``, then ``pair()``, then ``trust()``, then ``connect()``.
+5. Check the kernel actually attached it -- see ``attached()``.
 
 ``trust()`` is not optional: without it the device will not auto-reconnect
 after a reboot.
+
+Bonding is the trap that costs the afternoon. BlueZ will report ``Paired: yes``
+for a device whose link key was never stored, leaving ``Bonded: no``, and then
+refuse the HID connection outright::
+
+    bluetoothd: hidp_add_connection() Rejected connection from !bonded device
+
+The device sits there reporting itself connected, no input device is ever
+created, and nothing in ``bluetoothctl info`` says why -- the refusal is only
+in the journal. A half-paired device cannot be repaired in place: it has to be
+forgotten and paired again, which needs a fresh scan because ``remove`` drops
+the device object. ``setup()`` does all of that.
 """
 
 from __future__ import annotations
@@ -26,6 +39,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+from . import devices as hid
 from .devices import APPLE_VENDORS
 
 # "Modalias: bluetooth:v004Cp029Fd0206" -> vendor 0x004C, product 0x029F.
@@ -35,6 +49,8 @@ _DEVICE_LINE = re.compile(r"^Device\s+((?:[0-9A-F]{2}:){5}[0-9A-F]{2})\s*(.*)$",
 _RSSI = re.compile(r"\((-?\d+)\)")
 
 TIMEOUT = 30
+ATTACH_WAIT = 8.0
+REDISCOVER_SECONDS = 15
 
 
 class BluetoothUnavailable(RuntimeError):
@@ -46,6 +62,7 @@ class BluetoothDevice:
     mac: str
     name: str = ""
     paired: bool = False
+    bonded: bool = False
     trusted: bool = False
     connected: bool = False
     vendor: int | None = None
@@ -63,8 +80,19 @@ class BluetoothDevice:
 
     @property
     def ready(self) -> bool:
-        """Paired, trusted and connected -- i.e. will come back after reboot."""
-        return self.paired and self.trusted and self.connected
+        """Paired, bonded, trusted and connected -- i.e. it works and comes back.
+
+        ``bonded`` carries as much weight as ``paired`` here. Without a stored
+        link key the device is refused at HID connect time, so a device that is
+        paired, trusted and connected but not bonded is not ready for anything
+        -- it will never type.
+        """
+        return self.paired and self.bonded and self.trusted and self.connected
+
+    @property
+    def half_paired(self) -> bool:
+        """Paired without a link key: the state that needs a forget-and-retry."""
+        return self.paired and not self.bonded
 
     def __str__(self) -> str:
         state = []
@@ -72,6 +100,8 @@ class BluetoothDevice:
             state.append("connected")
         if self.paired:
             state.append("paired")
+        if self.half_paired:
+            state.append("NOT BONDED")
         if self.trusted:
             state.append("trusted")
         if not state:
@@ -125,6 +155,8 @@ def info(mac: str) -> BluetoothDevice | None:
                 device.name = device.name or value
             case "Paired":
                 device.paired = value == "yes"
+            case "Bonded":
+                device.bonded = value == "yes"
             case "Trusted":
                 device.trusted = value == "yes"
             case "Connected":
@@ -138,6 +170,12 @@ def info(mac: str) -> BluetoothDevice | None:
             case "RSSI":
                 if found := _RSSI.search(value):
                     device.rssi = int(found.group(1))
+
+    if "Bonded:" not in text:
+        # BlueZ before 5.65 has no Bonded flag at all; there Paired carries the
+        # whole meaning. Treating the missing field as "not bonded" would fail
+        # every pairing on an older stack, so take Paired at its word instead.
+        device.bonded = device.paired
     return device
 
 
@@ -191,18 +229,33 @@ def scan(seconds: int = 20, apple_only: bool = False) -> list[BluetoothDevice]:
 
 
 def pair(mac: str, timeout: int = 25) -> bool:
-    text = _run(["--timeout", str(timeout), "pair", mac], timeout=timeout + 10)
-    return "Pairing successful" in text or (info(mac) or BluetoothDevice(mac)).paired
+    """Pair, and insist a link key was stored.
+
+    Both "Pairing successful" and ``Paired: yes`` are also true of a device
+    BlueZ never bonded with, and that device is refused when the HID profile
+    tries to connect. Only a bonded device is paired in any useful sense, so
+    the state is read back rather than trusting the message.
+    """
+    _run(["--timeout", str(timeout), "pair", mac], timeout=timeout + 10)
+    state = info(mac)
+    return bool(state and state.paired and state.bonded)
 
 
 def trust(mac: str) -> bool:
-    text = _run(["trust", mac], timeout=10)
-    return "trust succeeded" in text
+    """Mark trusted, verified against the device rather than the message.
+
+    bluetoothctl prints "trust succeeded" for a trust issued while pairing is
+    still in flight, and the flag does not stick. Read it back.
+    """
+    _run(["trust", mac], timeout=10)
+    return (info(mac) or BluetoothDevice(mac)).trusted
 
 
 def connect(mac: str, timeout: int = 20) -> bool:
     text = _run(["--timeout", str(timeout), "connect", mac], timeout=timeout + 10)
-    return "Connection successful" in text
+    if "Connection successful" in text:
+        return True
+    return (info(mac) or BluetoothDevice(mac)).connected
 
 
 def disconnect(mac: str) -> bool:
@@ -214,12 +267,74 @@ def remove(mac: str) -> bool:
     return "Device has been removed" in _run(["remove", mac], timeout=10)
 
 
-def setup(mac: str) -> tuple[bool, str]:
-    """pair -> trust -> connect, the full sequence, with a readable outcome."""
+def attached(mac: str) -> bool:
+    """Whether the kernel has this device as a HID device.
+
+    The only honest test of a pairing. BlueZ reporting paired, trusted and
+    connected says nothing about whether an input device exists -- with a
+    missing link key the HID connection is refused and the device types
+    nothing. The HID layer records the Bluetooth address as the device serial,
+    which is what makes the match possible.
+    """
+    wanted = mac.lower()
+    try:
+        return any(device.serial.lower() == wanted
+                   for device in hid.devices(apple_only=False, with_battery=False))
+    except OSError:
+        return False
+
+
+def wait_attached(mac: str, seconds: float = ATTACH_WAIT) -> bool:
+    """Give the kernel a moment to bind the driver after connect() returns."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if attached(mac):
+            return True
+        time.sleep(0.5)
+    return attached(mac)
+
+
+def repair(mac: str, rediscover_seconds: int = REDISCOVER_SECONDS) -> bool:
+    """Forget a half-paired device and pair it again.
+
+    There is no way to add the missing link key to an existing pairing, so the
+    device has to go. ``remove`` also drops the device object, which makes it
+    unpairable until it is discovered again -- hence the scan, without which
+    the retry fails with a bare "not available".
+    """
+    disconnect(mac)
+    remove(mac)
+    scan(rediscover_seconds)
+    if info(mac) is None:
+        return False
+    return pair(mac)
+
+
+def setup(mac: str, rediscover_seconds: int = REDISCOVER_SECONDS) -> tuple[bool, str]:
+    """pair -> trust -> connect -> verify, recovering the half-paired state.
+
+    Returns a readable outcome. Success here means the kernel attached the
+    device, not merely that BlueZ was content.
+    """
     if not pair(mac):
-        return False, "pairing failed - try remove() and pair again, or power-cycle"
+        state = info(mac)
+        if state is None:
+            return False, ("the device is not advertising - unplug it, power-cycle "
+                           "the switch, and scan again")
+        if not state.half_paired:
+            return False, "pairing failed - power-cycle the switch and scan again"
+        # Paired with no link key. Forget it and start over; pairing on top of
+        # this state always fails the same way.
+        if not repair(mac, rediscover_seconds):
+            return False, ("paired without a link key (Bonded: no) and pairing "
+                           "again did not fix it - unplug it, power-cycle the "
+                           "switch, and scan again")
+
     if not trust(mac):
         return False, "paired, but trust failed - it will not auto-reconnect"
     if not connect(mac):
         return False, "paired and trusted, but connect failed"
-    return True, "paired, trusted and connected"
+    if not wait_attached(mac):
+        return False, ("BlueZ reports it connected, but the kernel never attached "
+                       "it - look for '!bonded device' in the journal")
+    return True, "paired, bonded, trusted, connected and attached"

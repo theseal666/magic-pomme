@@ -98,11 +98,162 @@ class TestDeviceParsing:
     def test_unknown_vendor_is_not_claimed_as_apple(self):
         assert not bluetooth.BluetoothDevice(mac="x").is_apple
 
-    def test_ready_requires_all_three_states(self):
-        full = dict(mac="x", paired=True, trusted=True, connected=True)
+    def test_ready_requires_bonding_as_well(self):
+        """Paired, trusted and connected is not enough, and this is not pedantry.
+
+        A real Magic Keyboard reached exactly this state: BlueZ said paired,
+        trusted and connected, while the journal said "Rejected connection from
+        !bonded device" and no input device was ever created. Reporting that
+        device as ready is how an afternoon disappears.
+        """
+        full = dict(mac="x", paired=True, bonded=True, trusted=True, connected=True)
         assert bluetooth.BluetoothDevice(**full).ready
+        assert not bluetooth.BluetoothDevice(**{**full, "bonded": False}).ready
         assert not bluetooth.BluetoothDevice(**{**full, "trusted": False}).ready
+
+    def test_half_paired_names_the_broken_state(self):
+        device = bluetooth.BluetoothDevice(mac="x", paired=True, connected=True)
+        assert device.half_paired
+        assert not bluetooth.BluetoothDevice(mac="x", paired=True,
+                                             bonded=True).half_paired
+
+    def test_str_shows_a_missing_link_key(self):
+        device = bluetooth.BluetoothDevice(mac="x", name="kb", paired=True,
+                                           trusted=True, connected=True)
+        assert "NOT BONDED" in str(device)
 
     def test_input_icon_recognised(self):
         assert bluetooth.BluetoothDevice(mac="x", icon="input-mouse").is_input
         assert not bluetooth.BluetoothDevice(mac="x", icon="phone").is_input
+
+
+_INFO = """Device 08:95:42:ED:BF:B4 (public)
+\tName: Magic Keyboard
+\tPaired: {paired}
+\tBonded: {bonded}
+\tTrusted: yes
+\tConnected: yes
+\tModalias: bluetooth:v004Cp029Fd0206
+"""
+
+_INFO_OLD_BLUEZ = """Device 08:95:42:ED:BF:B4 (public)
+\tName: Magic Keyboard
+\tPaired: yes
+\tTrusted: yes
+\tConnected: yes
+"""
+
+
+class TestBondedParsing:
+    def test_bonded_flag_is_read(self, monkeypatch):
+        monkeypatch.setattr(bluetooth, "_run",
+                            lambda *a, **k: _INFO.format(paired="yes", bonded="no"))
+        device = bluetooth.info("08:95:42:ED:BF:B4")
+        assert device.paired and not device.bonded and device.half_paired
+
+    def test_a_bonded_device_is_ready(self, monkeypatch):
+        monkeypatch.setattr(bluetooth, "_run",
+                            lambda *a, **k: _INFO.format(paired="yes", bonded="yes"))
+        assert bluetooth.info("08:95:42:ED:BF:B4").ready
+
+    def test_missing_field_falls_back_to_paired(self, monkeypatch):
+        """BlueZ before 5.65 has no Bonded flag; do not fail working pairings."""
+        monkeypatch.setattr(bluetooth, "_run", lambda *a, **k: _INFO_OLD_BLUEZ)
+        device = bluetooth.info("08:95:42:ED:BF:B4")
+        assert device.bonded and device.ready and not device.half_paired
+
+
+class TestPairInsistsOnALinkKey:
+    def test_successful_message_is_not_enough(self, monkeypatch):
+        """bluetoothctl says "Pairing successful" for an unbonded pairing too."""
+        monkeypatch.setattr(bluetooth, "_run", lambda *a, **k: "Pairing successful")
+        monkeypatch.setattr(bluetooth, "info", lambda mac: bluetooth.BluetoothDevice(
+            mac=mac, paired=True, bonded=False))
+        assert not bluetooth.pair("08:95:42:ED:BF:B4")
+
+    def test_bonded_pairing_is_accepted(self, monkeypatch):
+        monkeypatch.setattr(bluetooth, "_run", lambda *a, **k: "")
+        monkeypatch.setattr(bluetooth, "info", lambda mac: bluetooth.BluetoothDevice(
+            mac=mac, paired=True, bonded=True))
+        assert bluetooth.pair("08:95:42:ED:BF:B4")
+
+
+class TestTrustIsVerified:
+    def test_message_is_not_taken_at_face_value(self, monkeypatch):
+        """A trust issued while pairing is in flight prints success and does not stick."""
+        monkeypatch.setattr(bluetooth, "_run", lambda *a, **k: "trust succeeded")
+        monkeypatch.setattr(bluetooth, "info", lambda mac: bluetooth.BluetoothDevice(
+            mac=mac, paired=True, bonded=True, trusted=False))
+        assert not bluetooth.trust("08:95:42:ED:BF:B4")
+
+
+class TestAttached:
+    def test_matches_the_hid_serial_case_insensitively(self, monkeypatch):
+        seen = {}
+
+        def fake(apple_only=True, with_battery=True):
+            seen.update(apple_only=apple_only, with_battery=with_battery)
+            return [type("D", (), {"serial": "08:95:42:ED:BF:B4"})()]
+
+        monkeypatch.setattr(bluetooth.hid, "devices", fake)
+        assert bluetooth.attached("08:95:42:ed:bf:b4")
+        assert seen["with_battery"] is False, "attached() must not block on a battery read"
+
+    def test_absent_device_is_not_attached(self, monkeypatch):
+        monkeypatch.setattr(bluetooth.hid, "devices", lambda **k: [])
+        assert not bluetooth.attached("08:95:42:ed:bf:b4")
+
+
+@pytest.fixture
+def sequence(monkeypatch):
+    """Stub the whole bluetoothctl layer and record the call order."""
+    calls = []
+    state = {"bonded": False}
+
+    def fake_pair(mac, timeout=25):
+        calls.append("pair")
+        return state["bonded"]
+
+    def fake_scan(seconds=20, apple_only=False):
+        calls.append("scan")
+        state["bonded"] = state.pop("bond_on_retry", False)
+        return []
+
+    monkeypatch.setattr(bluetooth, "pair", fake_pair)
+    monkeypatch.setattr(bluetooth, "scan", fake_scan)
+    monkeypatch.setattr(bluetooth, "info", lambda mac: bluetooth.BluetoothDevice(
+        mac=mac, paired=True, bonded=state["bonded"], trusted=True, connected=True))
+    for name in ("disconnect", "remove", "trust"):
+        monkeypatch.setattr(bluetooth, name,
+                            lambda mac, _n=name: (calls.append(_n), True)[1])
+    monkeypatch.setattr(bluetooth, "connect",
+                        lambda mac, timeout=20: (calls.append("connect"), True)[1])
+    monkeypatch.setattr(bluetooth, "wait_attached",
+                        lambda mac, seconds=8.0: (calls.append("attach"), True)[1])
+    return calls, state
+
+
+class TestSetupRecoversTheHalfPairedState:
+    def test_forgets_rediscovers_and_pairs_again(self, sequence):
+        calls, state = sequence
+        state["bond_on_retry"] = True
+        ok, message = bluetooth.setup("08:95:42:ED:BF:B4")
+        assert ok, message
+        assert calls[:5] == ["pair", "disconnect", "remove", "scan", "pair"], calls
+        assert calls.index("remove") < calls.index("scan") < calls.index("pair", 1), (
+            "removing drops the device object, so it has to be rediscovered "
+            "before the retry can pair at all"
+        )
+
+    def test_reports_failure_when_the_retry_does_not_bond_either(self, sequence):
+        calls, _ = sequence
+        ok, message = bluetooth.setup("08:95:42:ED:BF:B4")
+        assert not ok
+        assert "link key" in message and "power-cycle" in message
+
+    def test_a_clean_pairing_does_not_touch_the_existing_bond(self, sequence):
+        calls, state = sequence
+        state["bonded"] = True
+        ok, _ = bluetooth.setup("08:95:42:ED:BF:B4")
+        assert ok
+        assert "remove" not in calls, "a working pairing must never be forgotten"

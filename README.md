@@ -12,8 +12,9 @@ project is not the GUI but the **encoded defaults** — shipping a tested
 
 Plugging an Apple keyboard into a stock Linux desktop walks you into a series
 of problems that are individually small and collectively enough to make most
-people give up. All five of these were hit in a single afternoon on Debian 13 /
-KDE Plasma 6 with a Magic Keyboard with Touch ID:
+people give up. The first five were hit in a single afternoon on Debian 13 /
+KDE Plasma 6 with a Magic Keyboard with Touch ID; the sixth turned up later,
+re-pairing that same keyboard:
 
 1. **`swap_ctrl_cmd` exists in the kernel, but no desktop exposes it.** Without
    it, Cmd+C does nothing and every shortcut is in the wrong place.
@@ -28,6 +29,13 @@ KDE Plasma 6 with a Magic Keyboard with Touch ID:
    transposes two keys on ISO keyboards.
 5. **`fnmode` does not match the printed legends** by default, so the media
    keys on the top row do the wrong thing.
+6. **Pairing can succeed without bonding.** BlueZ reports `Paired: yes` with
+   `Bonded: no`, then refuses the HID connection — `hidp_add_connection()
+   Rejected connection from !bonded device`, journal only. The device sits
+   there reporting itself connected and never becomes an input device, and
+   nothing in `bluetoothctl info` explains why. There is no way to add the
+   missing link key: it has to be forgotten and paired again, which needs a
+   fresh scan because `remove` drops the device object.
 
 A "Mac mode" toggle that applies the whole tested bundle at once — driver
 params, keyd layers, the terminal Ctrl-restore, and no-autosuspend — is the
@@ -62,7 +70,10 @@ magic-pomme-tray
 ```
 
 Shows connected devices with battery, and quick toggles for Mac modifiers,
-accelerated scrolling, middle click and the top-row Fn mode. Toggles that are
+accelerated scrolling, middle click and the top-row Fn mode. **Pair a device**
+scans and pairs from the panel, checking that the kernel actually attached the
+device rather than that BlueZ was content, and recovering the unbonded state
+above on its own. Toggles that are
 not yet writable are shown disabled with the reason, rather than failing
 silently or prompting for a password.
 
@@ -154,7 +165,8 @@ what is still missing.
 - `hid_apple` knobs: `swap_ctrl_cmd`, `fnmode`, `iso_layout`
 - `hid_magicmouse` knobs: `scroll_speed`, `scroll_acceleration`, `emulate_3button`
 - Live keybinding changes via the keyd IPC
-- Bluetooth connect / disconnect / battery
+- Bluetooth scan / pair / connect / disconnect / battery, with pairing
+  verified against the kernel rather than against bluetoothctl's output
 
 ## Non-goals
 
