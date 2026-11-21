@@ -134,3 +134,27 @@ class TestBatteryUnavailable:
         zero = devices.Battery(0, "Discharging")
         assert zero.unknown
         assert not zero.unavailable
+
+
+class TestBatteryState:
+    """The three sysfs states in docs/platform-notes.md must stay apart.
+
+    Conflating them produces visible lies about healthy hardware, which is why
+    the table in the platform notes spells out what each one must *not* render
+    as.
+    """
+
+    def test_enodata_is_a_refusal_not_a_pending_read(self):
+        assert devices.Battery(-1, "unavailable").state == "refused"
+
+    def test_zero_is_a_report_that_has_not_arrived(self):
+        assert devices.Battery(0, "unknown").state == "no-report-yet"
+
+    def test_a_real_reading_is_a_level(self):
+        assert devices.Battery(66, "Discharging").state == "level"
+
+    def test_unknown_still_covers_both_non_readings(self):
+        """Callers asking only "is this a real percentage?" keep the umbrella."""
+        assert devices.Battery(-1, "unavailable").unknown
+        assert devices.Battery(0, "unknown").unknown
+        assert not devices.Battery(66, "Discharging").unknown

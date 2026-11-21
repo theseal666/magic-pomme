@@ -28,6 +28,17 @@ def _bar(percent: int, width: int = 10) -> str:
     return f"{colour}{'#' * filled}{DIM}{'.' * (width - filled)}{OFF}"
 
 
+def _battery_line(battery: devices.Battery) -> str:
+    """One line per battery, keyed off Battery.state so it cannot drift."""
+    match battery.state:
+        case "refused":
+            return f"{DIM}not reported - the device refused to answer{OFF}"
+        case "no-report-yet":
+            return f"{DIM}awaiting first report since reconnect{OFF}"
+    state = "charging" if battery.charging else battery.status.lower()
+    return f"{_bar(battery.capacity)} {battery.capacity}% ({state})"
+
+
 def cmd_devices(args: argparse.Namespace) -> int:
     found = devices.devices(with_battery=not getattr(args, 'no_battery', False))
     if not found:
@@ -42,12 +53,8 @@ def cmd_devices(args: argparse.Namespace) -> int:
             print(f"    module      {device.module}")
         if device.serial:
             print(f"    serial      {device.serial}")
-        if device.battery and device.battery.unknown:
-            print(f"    battery     {DIM}awaiting first report since reconnect{OFF}")
-        elif device.battery:
-            state = "charging" if device.battery.charging else device.battery.status.lower()
-            print(f"    battery     {_bar(device.battery.capacity)} "
-                  f"{device.battery.capacity}% ({state})")
+        if device.battery:
+            print(f"    battery     {_battery_line(device.battery)}")
         print(f"    hid ids     {', '.join(device.hid_ids)}")
     return 0
 

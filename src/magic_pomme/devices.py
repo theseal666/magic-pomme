@@ -67,6 +67,25 @@ class Battery:
         return self.capacity == 0 or self.unavailable
 
     @property
+    def state(self) -> str:
+        """Which of the three documented sysfs states this is.
+
+        See the table in docs/platform-notes.md: no node, ``capacity`` 0, and a
+        read that fails with ENODATA are three different things, and only the
+        last two reach here. Tested most-specific first on purpose, because
+        ``unknown`` deliberately subsumes ``unavailable`` for callers that only
+        ask "is this a real percentage?". A renderer that tests in the other
+        order shows a device that refused to answer as one that is still
+        loading, which is the exact lie that table forbids -- and which the
+        CLI did show for a Magic Mouse while the tray got it right.
+        """
+        if self.unavailable:
+            return "refused"
+        if self.capacity == 0:
+            return "no-report-yet"
+        return "level"
+
+    @property
     def low(self) -> bool:
         return not self.unknown and 0 <= self.capacity <= 20 and not self.charging
 

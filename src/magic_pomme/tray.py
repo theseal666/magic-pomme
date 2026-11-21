@@ -381,16 +381,16 @@ class Tray(QSystemTrayIcon):
     def _device_label(device: devices.Device) -> str:
         if device.battery is None:
             charge = "battery reading..."
-        elif device.battery.unavailable:
-            charge = "battery not reported"
-        elif device.battery.unknown:
-            charge = "battery unknown"
-        elif device.battery:
-            charge = f"{device.battery.capacity}%"
-            if device.battery.charging:
-                charge += " charging"
         else:
-            charge = "no battery"
+            match device.battery.state:
+                case "refused":
+                    charge = "battery not reported"
+                case "no-report-yet":
+                    charge = "battery unknown"
+                case _:
+                    charge = f"{device.battery.capacity}%"
+                    if device.battery.charging:
+                        charge += " charging"
         return f"{device.name}  -  {device.transport}, {charge}"
 
     @staticmethod
@@ -398,8 +398,7 @@ class Tray(QSystemTrayIcon):
         parts = [
             f"{device.name}: {device.battery.capacity}%"
             for device in found
-            if device.battery and not device.battery.unknown
-               and not device.battery.unavailable
+            if device.battery and device.battery.state == "level"
         ]
         return "\n".join(parts) or "magic-pomme"
 

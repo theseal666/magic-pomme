@@ -120,6 +120,13 @@ observation log rather than another theory.
 | 2026-10-03, hours after pairing | 6.12.111 | `capacity` 0, flat for 15 min | 9.95s / 5.11s |
 | 2026-10-08 | 6.12.111 | 95% on both | 0.2s |
 | 2026-10-09 | 6.12.111 | read fails, `ENODATA` | 5.2s / 5.1s |
+| 2026-11-21, minutes after pairing | 6.12.117 | 66% mouse, 27% keyboard | fast |
+| 2026-11-21, ~1h later | 6.12.117 | keyboard 30%, mouse `ENODATA` x3 | 0.00s / 5.2-7.0s |
+
+The 2026-11-21 pair is the first reading taken from both devices at the same
+moment: the keyboard answered from cache in 0.00s while the mouse refused three
+times in a row, on the same adapter, the same bond and the same kernel. So
+whatever this is, it is per-device rather than adapter- or stack-wide.
 
 Same kernel, same pairing, same devices throughout. Discarded along the way:
 a regression between 6.12.107 and 6.12.111 (the same kernel later worked);
