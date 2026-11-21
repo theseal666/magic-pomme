@@ -228,6 +228,11 @@ def sequence(monkeypatch):
                             lambda mac, _n=name: (calls.append(_n), True)[1])
     monkeypatch.setattr(bluetooth, "connect",
                         lambda mac, timeout=20: (calls.append("connect"), True)[1])
+    # setup() goes through connect_with_reason, not connect. Leaving it unstubbed
+    # made this suite open a real Bluetooth connection to whatever hardware was
+    # paired on the machine running the tests -- 40 seconds of it.
+    monkeypatch.setattr(bluetooth, "connect_with_reason",
+                        lambda mac, timeout=20: (calls.append("connect"), (True, ""))[1])
     monkeypatch.setattr(bluetooth, "wait_attached",
                         lambda mac, seconds=8.0: (calls.append("attach"), True)[1])
     return calls, state
@@ -257,3 +262,60 @@ class TestSetupRecoversTheHalfPairedState:
         ok, _ = bluetooth.setup("08:95:42:ED:BF:B4")
         assert ok
         assert "remove" not in calls, "a working pairing must never be forgotten"
+
+
+class TestOutcomesAreReadBackNotMatched:
+    """bluetoothctl's wording is not a contract, and betting on it has cost twice.
+
+    disconnect() matched "Successful disconnected". bluetoothctl says
+    "Disconnection successful", so every successful disconnect was reported as
+    a failure -- including inside repair(), where it masked a device that had
+    in fact been dropped.
+    """
+
+    def test_disconnect_believes_the_device_over_the_wording(self, monkeypatch):
+        monkeypatch.setattr(bluetooth, "_run",
+                            lambda *a, **k: "Disconnection successful")
+        monkeypatch.setattr(bluetooth, "info", lambda mac: bluetooth.BluetoothDevice(
+            mac=mac, paired=True, bonded=True, connected=False))
+        assert bluetooth.disconnect("08:95:42:ED:BF:B4")
+
+    def test_disconnect_fails_when_the_device_is_still_connected(self, monkeypatch):
+        monkeypatch.setattr(bluetooth, "_run", lambda *a, **k: "whatever")
+        monkeypatch.setattr(bluetooth, "info", lambda mac: bluetooth.BluetoothDevice(
+            mac=mac, paired=True, bonded=True, connected=True))
+        assert not bluetooth.disconnect("08:95:42:ED:BF:B4")
+
+    def test_remove_is_confirmed_by_the_device_being_gone(self, monkeypatch):
+        monkeypatch.setattr(bluetooth, "_run", lambda *a, **k: "")
+        monkeypatch.setattr(bluetooth, "info", lambda mac: None)
+        assert bluetooth.remove("08:95:42:ED:BF:B4")
+
+    def test_remove_fails_while_the_device_is_still_known(self, monkeypatch):
+        monkeypatch.setattr(bluetooth, "_run", lambda *a, **k: "Device has been removed")
+        monkeypatch.setattr(bluetooth, "info", lambda mac: bluetooth.BluetoothDevice(
+            mac=mac, paired=True))
+        assert not bluetooth.remove("08:95:42:ED:BF:B4")
+
+
+class TestConnectKeepsTheReason:
+    def test_a_sleeping_device_is_named_as_such(self, monkeypatch):
+        monkeypatch.setattr(
+            bluetooth, "_run",
+            lambda *a, **k: ("Attempting to connect to 58:73:D8:E7:AE:72\n"
+                             "Failed to connect: org.bluez.Error.Failed "
+                             "br-connection-create-socket\n"))
+        monkeypatch.setattr(bluetooth, "info", lambda mac: bluetooth.BluetoothDevice(
+            mac=mac, paired=True, bonded=True, connected=False))
+        ok, reason = bluetooth.connect_with_reason("58:73:D8:E7:AE:72")
+        assert not ok
+        assert "br-connection-create-socket" in reason
+
+    def test_setup_turns_that_into_an_instruction(self, monkeypatch):
+        monkeypatch.setattr(bluetooth, "pair", lambda mac, timeout=25: True)
+        monkeypatch.setattr(bluetooth, "trust", lambda mac: True)
+        monkeypatch.setattr(bluetooth, "connect_with_reason",
+                            lambda mac, timeout=20: (False, "br-connection-create-socket"))
+        ok, message = bluetooth.setup("58:73:D8:E7:AE:72")
+        assert not ok
+        assert "power-cycle" in message

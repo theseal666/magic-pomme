@@ -251,20 +251,52 @@ def trust(mac: str) -> bool:
     return (info(mac) or BluetoothDevice(mac)).trusted
 
 
-def connect(mac: str, timeout: int = 20) -> bool:
+def connect_with_reason(mac: str, timeout: int = 20) -> tuple[bool, str]:
+    """Connect, and keep bluetoothctl's reason when it fails.
+
+    The reason matters: ``br-connection-create-socket`` is what a device that
+    has gone to sleep or been switched off answers, and no amount of retrying
+    from here wakes it -- observed on a Magic Mouse that only came back when
+    its switch was physically power-cycled. Swallowing that text leaves the
+    user with a bare "connect failed" and nothing to act on.
+    """
     text = _run(["--timeout", str(timeout), "connect", mac], timeout=timeout + 10)
     if "Connection successful" in text:
-        return True
-    return (info(mac) or BluetoothDevice(mac)).connected
+        return True, ""
+    if (info(mac) or BluetoothDevice(mac)).connected:
+        return True, ""
+    reason = ""
+    for line in text.splitlines():
+        if "Failed to connect" in line:
+            reason = line.split(":", 1)[-1].strip()
+    return False, reason
+
+
+def connect(mac: str, timeout: int = 20) -> bool:
+    return connect_with_reason(mac, timeout)[0]
 
 
 def disconnect(mac: str) -> bool:
-    return "Successful disconnected" in _run(["disconnect", mac], timeout=15)
+    """Disconnect, verified against the device.
+
+    This used to match on "Successful disconnected", which bluetoothctl does
+    not say -- it says "Disconnection successful". So this reported failure on
+    every successful disconnect, including the ones inside repair(), where it
+    hid the fact that the device really had been dropped.
+    """
+    _run(["disconnect", mac], timeout=15)
+    return not (info(mac) or BluetoothDevice(mac, connected=True)).connected
 
 
 def remove(mac: str) -> bool:
-    """Forget a device. Needed before re-pairing one that fails to authenticate."""
-    return "Device has been removed" in _run(["remove", mac], timeout=10)
+    """Forget a device, verified by the device object being gone.
+
+    Needed before re-pairing one that fails to authenticate. Checked by
+    reading back rather than by matching output, because the wording of these
+    messages is not a contract -- see disconnect().
+    """
+    _run(["remove", mac], timeout=10)
+    return info(mac) is None
 
 
 def attached(mac: str) -> bool:
@@ -332,8 +364,12 @@ def setup(mac: str, rediscover_seconds: int = REDISCOVER_SECONDS) -> tuple[bool,
 
     if not trust(mac):
         return False, "paired, but trust failed - it will not auto-reconnect"
-    if not connect(mac):
-        return False, "paired and trusted, but connect failed"
+    connected, reason = connect_with_reason(mac)
+    if not connected:
+        if "br-connection-create-socket" in reason:
+            return False, ("paired and trusted, but it is asleep or switched off "
+                           "- power-cycle its switch and try again")
+        return False, f"paired and trusted, but connect failed{f': {reason}' if reason else ''}"
     if not wait_attached(mac):
         return False, ("BlueZ reports it connected, but the kernel never attached "
                        "it - look for '!bonded device' in the journal")

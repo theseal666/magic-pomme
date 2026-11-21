@@ -82,6 +82,11 @@ set `0`.
   optional, because `remove` drops the device object and pairing an unknown
   address fails with a bare `not available`. Note that `Bonded` only exists
   from BlueZ 5.65; on older stacks `Paired` carries the whole meaning.
+- **`org.bluez.Error.Failed br-connection-create-socket` on connect means the
+  device is asleep or switched off**, not that the bond is broken. Retrying
+  from the host does not wake it: two attempts failed and the third succeeded
+  only because the switch had just been flicked by hand in between. Say so to
+  the user instead of reporting a bare connect failure.
 - The honest test of a pairing is whether the kernel attached the device, not
   what BlueZ reports: look for the Bluetooth address as the HID device serial
   (`HID_UNIQ`), lowercased.
@@ -122,6 +127,13 @@ observation log rather than another theory.
 | 2026-10-09 | 6.12.111 | read fails, `ENODATA` | 5.2s / 5.1s |
 | 2026-11-21, minutes after pairing | 6.12.117 | 66% mouse, 27% keyboard | fast |
 | 2026-11-21, ~1h later | 6.12.117 | keyboard 30%, mouse `ENODATA` x3 | 0.00s / 5.2-7.0s |
+| 2026-11-21, after disconnect + reconnect | 6.12.117 | mouse `ENODATA` | 20.6s / 16.5s / 6.2s |
+| 2026-11-21, after a switch power-cycle | 6.12.117 | mouse `ENODATA` | 31.5s / 15.5s |
+
+Two remedies are now ruled out, not merely untried: a full BlueZ
+disconnect/reconnect, and a physical power-cycle of the device's own switch.
+Neither restored reporting on the mouse, and the read times got *longer*
+afterwards rather than shorter.
 
 The 2026-11-21 pair is the first reading taken from both devices at the same
 moment: the keyboard answered from cache in 0.00s while the mouse refused three
