@@ -221,3 +221,36 @@ class TestRangesAreRefused:
         for bad in (-1.5, 1.5):
             with pytest.raises(ValueError):
                 plasma_input.set_pointer_acceleration(_trackpad(), bad)
+
+
+class TestDashValuesSurviveTheCommandLine:
+    """A negative pointer speed crashed the tray applet.
+
+    kwriteconfig6 parses with QCommandLineParser, so `-0.25` as a bare
+    argument is read as options: "Unknown options: 0, ., 2, 5." and exit 1.
+    Positive values were fine, so this stayed hidden until someone chose a
+    speed left of centre -- and the resulting CalledProcessError escaped a Qt
+    slot, which aborts the process.
+    """
+
+    def _command(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(plasma_input, "_tool", lambda name: "/bin/true")
+        monkeypatch.setattr(
+            plasma_input.subprocess, "run",
+            lambda command, **kw: seen.append(command) or type(
+                "R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+        )
+        return seen
+
+    def test_the_value_is_passed_after_a_separator(self, monkeypatch):
+        seen = self._command(monkeypatch)
+        plasma_input._config_write(_trackpad(), "PointerAcceleration", "-0.25")
+        command = seen[0]
+        assert command[-2:] == ["--", "-0.25"], command
+
+    def test_positive_values_take_the_same_route(self, monkeypatch):
+        seen = self._command(monkeypatch)
+        plasma_input._config_write(_trackpad(), "ScrollFactor", "0.5")
+        assert seen[0][-2:] == ["--", "0.5"]
+

@@ -100,6 +100,23 @@ class BatteryWorker(QThread):
         self._wake.set()
 
 
+def guarded(action) -> str | None:
+    """Run a settings write, returning a message rather than raising.
+
+    PyQt6 calls qFatal when an exception escapes a slot, so an unhandled error
+    in a menu handler does not print a traceback and carry on -- it aborts the
+    process with a core dump and takes the panel icon with it. That is how a
+    kwriteconfig6 exit status killed the applet. Everything is caught here,
+    deliberately including the subprocess errors that are not OSError, because
+    no failed setting is worth the whole applet.
+    """
+    try:
+        action()
+    except Exception as error:          # noqa: BLE001 - see above
+        return str(error) or error.__class__.__name__
+    return None
+
+
 class ScanWorker(QThread):
     """Scans off the UI thread: a scan window is twenty blocking seconds."""
 
@@ -496,20 +513,13 @@ class Tray(QSystemTrayIcon):
         self._apply(run)
 
     def _apply(self, action) -> None:
-        try:
-            action()
-        except (plasma_input.PlasmaToolsMissing, ValueError, OSError) as error:
-            self.showMessage("magic-pomme", str(error),
-                             QSystemTrayIcon.MessageIcon.Warning, 5000)
+        if message := guarded(action):
+            self.showMessage("magic-pomme", message,
+                             QSystemTrayIcon.MessageIcon.Warning, 6000)
         self.refresh()
 
     def _write(self, module: str, param: str, value: int) -> None:
-        try:
-            drivers.write(module, param, value)
-        except (PermissionError, ValueError, FileNotFoundError) as error:
-            self.showMessage("magic-pomme", str(error),
-                             QSystemTrayIcon.MessageIcon.Warning, 5000)
-        self.refresh()
+        self._apply(lambda: drivers.write(module, param, value))
 
 
 TRAY_WAIT_SECONDS = 90.0

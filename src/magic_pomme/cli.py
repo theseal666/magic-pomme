@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 
 from . import (__version__, bluetooth, devices, drivers, keyd,
@@ -102,7 +103,8 @@ def cmd_pointer(args: argparse.Namespace) -> int:
                 print(f"  {BAD}could not set the {args.profile} profile{OFF}",
                       file=sys.stderr)
                 return 1
-    except (plasma_input.PlasmaToolsMissing, ValueError, OSError) as error:
+    except (plasma_input.PlasmaToolsMissing, ValueError, OSError,
+            subprocess.SubprocessError) as error:
         print(f"  {BAD}{error}{OFF}", file=sys.stderr)
         return 1
 

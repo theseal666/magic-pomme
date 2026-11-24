@@ -209,9 +209,17 @@ def _config_read(pointer: Pointer, key: str) -> str:
 
 
 def _config_write(pointer: Pointer, key: str, value: str) -> None:
+    """Write one key.
+
+    The ``--`` is load-bearing. kwriteconfig6 parses with QCommandLineParser,
+    so a value beginning with a dash is read as options: ``-0.25`` came back as
+    "Unknown options: 0, ., 2, 5." and exit 1, which made every negative
+    pointer speed fail. Positive values worked, so this hid until someone
+    picked a value left of centre.
+    """
     subprocess.run(
         _as_user([_tool("kwriteconfig"), "--file", CONFIG,
-                  *_group_args(pointer), "--key", key, value]),
+                  *_group_args(pointer), "--key", key, "--", value]),
         capture_output=True, text=True, timeout=10, check=True,
     )
 
