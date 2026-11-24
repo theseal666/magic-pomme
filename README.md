@@ -37,6 +37,13 @@ re-pairing that same keyboard:
    missing link key: it has to be forgotten and paired again, which needs a
    fresh scan because `remove` drops the device object.
 
+7. **Scroll and pointer speed are not driver settings, and the driver ones
+   cannot be per device.** `hid_magicmouse.scroll_speed` is a module parameter
+   shared by every device the driver binds, so tuning a trackpad through it
+   changes the mouse with it. The per-device settings live in KWin -- and its
+   acceleration profile cannot be written to the config at all, only set live,
+   because a reconfigure resets it.
+
 A "Mac mode" toggle that applies the whole tested bundle at once — driver
 params, keyd layers, the terminal Ctrl-restore, and no-autosuspend — is the
 product. The tray icon is the thin part.
@@ -73,7 +80,9 @@ Shows connected devices with battery, and quick toggles for Mac modifiers,
 accelerated scrolling, middle click and the top-row Fn mode. **Pair a device**
 scans and pairs from the panel, checking that the kernel actually attached the
 device rather than that BlueZ was content, and recovering the unbonded state
-above on its own. Toggles that are
+above on its own. Each pointer device gets its own submenu for scroll speed,
+pointer speed, acceleration profile and natural scrolling, kept separate from
+the driver toggles because those cannot be set per device. Toggles that are
 not yet writable are shown disabled with the reason, rather than failing
 silently or prompting for a password.
 
@@ -167,6 +176,8 @@ what is still missing.
 - Live keybinding changes via the keyd IPC
 - Bluetooth scan / pair / connect / disconnect / battery, with pairing
   verified against the kernel rather than against bluetoothctl's output
+- Per-device scroll speed, pointer speed, acceleration profile and natural
+  scrolling, for mice and trackpads alike (`magic-pomme pointer`)
 
 ## Non-goals
 

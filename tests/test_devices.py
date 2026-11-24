@@ -158,3 +158,37 @@ class TestBatteryState:
         assert devices.Battery(-1, "unavailable").unknown
         assert devices.Battery(0, "unknown").unknown
         assert not devices.Battery(66, "Discharging").unknown
+
+
+class TestBatteryNodes:
+    """Whether a device has a battery at all is a fourth state, and cheap.
+
+    A Magic Trackpad 1 has no power_supply node. Without this the UI cannot
+    tell that from a reading that has not arrived, so it sits at
+    "battery reading..." forever and something re-reads it on a timer.
+    """
+
+    def _supply(self, tmp_path, name, owner, capacity=True):
+        node = tmp_path / name
+        node.mkdir(parents=True)
+        if capacity:
+            (node / "capacity").write_text("66\n")
+        target = tmp_path / "hid" / owner
+        target.mkdir(parents=True, exist_ok=True)
+        (node / "device").symlink_to(target)
+        return node
+
+    def test_lists_the_owning_hid_ids(self, tmp_path, monkeypatch):
+        self._supply(tmp_path, "hid-aa-battery", "0005:004C:029F.0005")
+        monkeypatch.setattr(devices, "POWER_SUPPLY", tmp_path)
+        assert devices.battery_nodes() == {"0005:004C:029F.0005"}
+
+    def test_a_node_without_capacity_is_not_counted(self, tmp_path, monkeypatch):
+        self._supply(tmp_path, "hid-bb-battery", "0005:05AC:030E.000E",
+                     capacity=False)
+        monkeypatch.setattr(devices, "POWER_SUPPLY", tmp_path)
+        assert devices.battery_nodes() == set()
+
+    def test_no_directory_is_not_an_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(devices, "POWER_SUPPLY", tmp_path / "nope")
+        assert devices.battery_nodes() == set()

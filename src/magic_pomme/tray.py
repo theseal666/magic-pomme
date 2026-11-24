@@ -42,6 +42,12 @@ QUICK_TOGGLES = (
     ("hid_magicmouse", "scroll_acceleration", "Accelerated scrolling"),
     ("hid_magicmouse", "emulate_3button", "Middle click"),
 )
+# Presets rather than sliders: the tray menu is exported to Plasma over
+# DBusMenu, which carries menu items and not widgets, so a QSlider in here
+# renders as nothing at all.
+SCROLL_STEPS = (0.3, 0.5, 0.75, 1.0, 1.5)
+SPEED_STEPS = (-0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0)
+
 FN_LABELS = {
     1: "Media keys (match printed legends)",
     2: "F-keys",
@@ -142,6 +148,7 @@ class Tray(QSystemTrayIcon):
         self.setToolTip("magic-pomme")
 
         self._batteries: dict[str, devices.Battery] = {}
+        self._battery_nodes: set[str] = set()
         self._worker = BatteryWorker()
         self._worker.updated.connect(self._on_batteries)
         self._worker.start()
@@ -179,14 +186,23 @@ class Tray(QSystemTrayIcon):
         ask for an early one rather than leaving it at "battery reading...".
         """
         found = devices.devices(with_battery=False)
+        try:
+            self._battery_nodes = devices.battery_nodes()
+        except OSError:
+            self._battery_nodes = set()
         for device in found:
             for hid_id in device.hid_ids:
                 if hid_id in self._batteries:
                     device.battery = self._batteries[hid_id]
                     break
-        if any(device.battery is None for device in found):
+        if any(device.battery is None and self._has_battery(device)
+               for device in found):
             self._worker.poll_now()
         return found
+
+    def _has_battery(self, device: devices.Device) -> bool:
+        """Whether this device has a battery node, so a reading can be expected."""
+        return any(hid_id in self._battery_nodes for hid_id in device.hid_ids)
 
     def _refresh_tooltip(self) -> None:
         self.setToolTip(self._tooltip(self._found_with_batteries()))
@@ -209,6 +225,9 @@ class Tray(QSystemTrayIcon):
 
         self._menu.addSeparator()
         writable = not status.unwritable
+        # Said out loud, because it is the first thing that misleads: these are
+        # module parameters, shared by every device the driver binds.
+        self._menu.addAction("Driver - affects all devices").setEnabled(False)
 
         for module, param, label in QUICK_TOGGLES:
             value = drivers.read(module, param)
@@ -217,16 +236,6 @@ class Tray(QSystemTrayIcon):
             action.setEnabled(writable and value is not None)
             action.triggered.connect(
                 lambda checked, m=module, p=param: self._write(m, p, int(checked))
-            )
-            self._menu.addAction(action)
-
-        for pointer in plasma_input.pointers():
-            current = plasma_input.natural_scroll(pointer)
-            action = QAction(f"Natural scrolling - {pointer.name}",
-                             self._menu, checkable=True)
-            action.setChecked(bool(current))
-            action.triggered.connect(
-                lambda checked, pt=pointer: self._set_scroll(pt, checked)
             )
             self._menu.addAction(action)
 
@@ -244,6 +253,13 @@ class Tray(QSystemTrayIcon):
                 )
                 group.addAction(action)
                 submenu.addAction(action)
+
+        pointers = plasma_input.pointers()
+        if pointers:
+            self._menu.addSeparator()
+            self._menu.addAction("Per device").setEnabled(False)
+        for pointer in pointers:
+            self._add_pointer_menu(pointer)
 
         if not writable:
             self._menu.addSeparator()
@@ -377,10 +393,9 @@ class Tray(QSystemTrayIcon):
             return f"Toggles need a {session.refresh_action()}"
         return "Parameters are not writable"
 
-    @staticmethod
-    def _device_label(device: devices.Device) -> str:
+    def _device_label(self, device: devices.Device) -> str:
         if device.battery is None:
-            charge = "battery reading..."
+            charge = "battery reading..." if self._has_battery(device) else "no battery"
         else:
             match device.battery.state:
                 case "refused":
@@ -402,10 +417,88 @@ class Tray(QSystemTrayIcon):
         ]
         return "\n".join(parts) or "magic-pomme"
 
-    def _set_scroll(self, pointer: plasma_input.Pointer, enabled: bool) -> None:
+    def _add_pointer_menu(self, pointer: plasma_input.Pointer) -> None:
+        """One submenu per pointer device.
+
+        These settings are KWin's and are keyed to the device, so a trackpad
+        can be tuned without touching the mouse -- which the driver parameters
+        above cannot do.
+        """
+        settings = plasma_input.settings(pointer)
+        submenu = self._menu.addMenu(pointer.name)
+
+        natural = QAction("Natural scrolling", submenu, checkable=True)
+        natural.setChecked(bool(settings.natural_scroll))
+        natural.triggered.connect(
+            lambda checked, pt=pointer: self._apply(
+                lambda: plasma_input.set_natural_scroll(pt, checked))
+        )
+        submenu.addAction(natural)
+
+        self._add_steps(
+            submenu, "Scroll speed", SCROLL_STEPS, settings.scroll_factor, 1.0,
+            lambda value, pt=pointer: self._apply(
+                lambda: plasma_input.set_scroll_factor(pt, value)),
+        )
+        self._add_steps(
+            submenu, "Pointer speed", SPEED_STEPS,
+            settings.pointer_acceleration, 0.0,
+            lambda value, pt=pointer: self._apply(
+                lambda: plasma_input.set_pointer_acceleration(pt, value)),
+        )
+
+        if not settings.supports_flat:
+            return
+        accel = submenu.addMenu("Acceleration")
+        group = QActionGroup(accel)
+        group.setExclusive(True)
+        for label, flat in (("Adaptive - ramps with speed", False),
+                            ("Flat - no ramp", True)):
+            entry = QAction(label, accel, checkable=True)
+            entry.setChecked(settings.flat_profile is flat)
+            entry.triggered.connect(
+                lambda _checked, pt=pointer, f=flat: self._set_profile(pt, f)
+            )
+            group.addAction(entry)
+            accel.addAction(entry)
+
+    @staticmethod
+    def _add_steps(parent: QMenu, title: str, steps: tuple[float, ...],
+                   current: float | None, default: float, apply) -> None:
+        """A preset submenu, with the live value shown when it is off-grid.
+
+        Showing "current" rather than silently checking the nearest step keeps
+        a hand-tuned value from being misreported as one of these presets.
+        """
+        submenu = parent.addMenu(title)
+        matches = [step for step in steps
+                   if current is not None and abs(current - step) < 0.01]
+        if current is not None and not matches:
+            submenu.addAction(f"current: {current:g}").setEnabled(False)
+            submenu.addSeparator()
+
+        group = QActionGroup(submenu)
+        group.setExclusive(True)
+        for step in steps:
+            label = f"{step:g}"
+            if abs(step - default) < 0.01:
+                label += "  (default)"
+            entry = QAction(label, submenu, checkable=True)
+            entry.setChecked(step in matches)
+            entry.triggered.connect(lambda _checked, value=step: apply(value))
+            group.addAction(entry)
+            submenu.addAction(entry)
+
+    def _set_profile(self, pointer: plasma_input.Pointer, flat: bool) -> None:
+        def run() -> None:
+            if not plasma_input.set_flat_profile(pointer, flat):
+                raise OSError("KWin would not change the acceleration profile")
+        self._apply(run)
+
+    def _apply(self, action) -> None:
         try:
-            plasma_input.set_natural_scroll(pointer, enabled)
-        except (plasma_input.PlasmaToolsMissing, OSError) as error:
+            action()
+        except (plasma_input.PlasmaToolsMissing, ValueError, OSError) as error:
             self.showMessage("magic-pomme", str(error),
                              QSystemTrayIcon.MessageIcon.Warning, 5000)
         self.refresh()

@@ -183,6 +183,28 @@ def batteries() -> dict[str, Battery]:
     return found
 
 
+def battery_nodes() -> set[str]:
+    """HID ids that have a battery node at all, without reading any of them.
+
+    Enumeration resolves symlinks only, so unlike batteries() this never
+    blocks. It answers the one question the three documented states cannot:
+    whether a device has a battery to report. A Magic Trackpad 1 has none, and
+    without this it would sit at "battery reading..." forever while something
+    re-read it on a timer.
+    """
+    found: set[str] = set()
+    if not POWER_SUPPLY.is_dir():
+        return found
+    for supply in POWER_SUPPLY.iterdir():
+        if not (supply / "capacity").exists():
+            continue
+        try:
+            found.add((supply / "device").resolve(strict=True).name)
+        except OSError:
+            continue
+    return found
+
+
 def devices(apple_only: bool = True, with_battery: bool = True) -> list[Device]:
     """Enumerate input devices, one entry per *physical* device.
 

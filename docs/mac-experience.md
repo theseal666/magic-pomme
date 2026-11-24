@@ -18,6 +18,10 @@ not a guess at what might.
 | Middle click | `hid_magicmouse.emulate_3button` | CLI, tray |
 | Scroll rate | `hid_magicmouse.scroll_speed` | CLI |
 | Natural scrolling | `kcminputrc` via KWin | CLI, tray |
+| Scroll speed, per device | `ScrollFactor` via KWin | CLI, tray |
+| Pointer speed, per device | `PointerAcceleration` via KWin | CLI, tray |
+| Acceleration curve | KWin device object, live only | CLI, tray |
+| macOS's own acceleration curve | not reachable -- KWin exposes no custom profile | — |
 | Bluetooth pairing | BlueZ | CLI |
 | Battery levels | sysfs | CLI, tray |
 | Bluetooth input lag | udev rule | setup |

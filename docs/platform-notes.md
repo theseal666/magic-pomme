@@ -163,6 +163,57 @@ slow first read.
 The read blocks for 5-10s in both failing states, which is why battery must
 never be read on a UI thread. See `devices(with_battery=False)`.
 
+## Per-device pointer settings
+
+Scroll speed and pointer speed are **not** driver parameters.
+`hid_magicmouse.scroll_speed` is a module parameter shared by every device the
+driver binds, so tuning a trackpad through it changes the Magic Mouse too.
+KWin keys the real settings to the device in `kcminputrc`:
+
+```
+[Libinput][<vendor-decimal>][<product-decimal>][<device name>]
+NaturalScroll=true
+ScrollFactor=0.5
+PointerAcceleration=0.15
+PointerAccelerationProfile=1
+```
+
+`ScrollFactor` is a multiplier (1.0 untouched). `PointerAcceleration` runs
+-1.0 to 1.0 with 0.0 the device default. Both are applied by writing the
+config and asking KWin to re-read it.
+
+### The profile cannot be written, only set
+
+`PointerAccelerationProfile` is a real key -- it is in `libkwin.so.6` -- but
+writing it achieves nothing. `reconfigure` resets the profile to the device
+default and never reads the stored value, so a config write followed by a
+reconfigure leaves the profile untouched, and a reconfigure for any *other*
+setting silently throws a flat profile away. Tested with 1, 2, `flat` and
+`FLAT`: all ended up adaptive.
+
+Set it on KWin's live device object instead
+(`org.kde.KWin.InputDevice.pointerAccelerationProfileFlat` on
+`/org/kde/KWin/InputDevice/<sysname>`) and do not reconfigure afterwards. KWin
+then writes the key to `kcminputrc` on its own, which is how the values were
+established by observation: **1 is flat, 2 is adaptive** -- the reverse of
+libinput's own enum, so do not infer it from there. Verified on KWin 6.3.6.
+
+### No macOS-like curve is reachable
+
+libinput 1.28.1 has a custom acceleration profile that could approximate
+macOS's curve point by point, but KWin exposes only `adaptive` and `flat`
+(`supportsPointerAccelerationProfile*` lists no custom). macOS defaults to a
+curve, so neither Linux option matches it: `adaptive` ramps harder than macOS
+and overshoots, `flat` does not ramp at all.
+
+### Finding the devices
+
+A trackpad has **no relative axes**. The Magic Trackpad reports absolute
+multitouch axes and nothing in `capabilities/rel`, so a pointer filter built
+on REL misses it completely while the Magic Mouse beside it works. Absolute
+axes alone would also match touchscreens and tablets, so require
+`INPUT_PROP_POINTER` in `properties` and reject `INPUT_PROP_DIRECT`.
+
 ## Wayland limits
 
 - **No per-application remapping on KDE Wayland.** keyd's app-aware mapper

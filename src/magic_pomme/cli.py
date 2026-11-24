@@ -28,6 +28,89 @@ def _bar(percent: int, width: int = 10) -> str:
     return f"{colour}{'#' * filled}{DIM}{'.' * (width - filled)}{OFF}"
 
 
+POINTER_PROFILES = {"flat": True, "adaptive": False}
+
+
+def _pointer_lines(pointer: plasma_input.Pointer) -> list[str]:
+    settings = plasma_input.settings(pointer)
+    kind = "touchpad" if pointer.touchpad else "pointer"
+    profile = "-"
+    if settings.flat_profile is not None:
+        profile = "flat" if settings.flat_profile else "adaptive"
+    return [
+        f"  {BOLD}{pointer.name}{OFF}",
+        f"    kind        {kind}  ({pointer.sys_name or 'no KWin object'})",
+        f"    scroll      {_shown(settings.scroll_factor)}"
+        f"{DIM} (1.0 = untouched){OFF}",
+        f"    speed       {_shown(settings.pointer_acceleration)}"
+        f"{DIM} (-1.0 to 1.0, 0.0 = device default){OFF}",
+        f"    profile     {profile}",
+        f"    natural     {_shown(settings.natural_scroll)}",
+    ]
+
+
+def _shown(value: object) -> str:
+    if value is None:
+        return f"{DIM}unset{OFF}"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def cmd_pointer(args: argparse.Namespace) -> int:
+    """Per-device KWin settings, which is where scroll and pointer speed live.
+
+    Not to be confused with the hid_magicmouse parameters: those are module
+    parameters shared by every device the driver binds, so they cannot be set
+    per device at all.
+    """
+    found = plasma_input.pointers(apple_only=not args.all)
+    if args.device:
+        wanted = args.device.lower()
+        found = [p for p in found if wanted in p.name.lower()
+                 or wanted == p.sys_name]
+    if not found:
+        print("  no matching pointer devices", file=sys.stderr)
+        return 1
+
+    changes = (args.scroll, args.speed, args.profile, args.natural)
+    if not any(change is not None for change in changes):
+        for pointer in found:
+            for line in _pointer_lines(pointer):
+                print(line)
+        return 0
+
+    if len(found) > 1:
+        print(f"  {BAD}{len(found)} devices match - name one with --device{OFF}",
+              file=sys.stderr)
+        for pointer in found:
+            print(f"    {pointer.name}", file=sys.stderr)
+        return 2
+
+    pointer = found[0]
+    try:
+        if args.scroll is not None:
+            plasma_input.set_scroll_factor(pointer, args.scroll)
+        if args.speed is not None:
+            plasma_input.set_pointer_acceleration(pointer, args.speed)
+        if args.natural is not None:
+            plasma_input.set_natural_scroll(pointer, args.natural == "on")
+        # Last, and never followed by a reconfigure: see set_flat_profile().
+        if args.profile is not None:
+            flat = POINTER_PROFILES[args.profile]
+            if not plasma_input.set_flat_profile(pointer, flat):
+                print(f"  {BAD}could not set the {args.profile} profile{OFF}",
+                      file=sys.stderr)
+                return 1
+    except (plasma_input.PlasmaToolsMissing, ValueError, OSError) as error:
+        print(f"  {BAD}{error}{OFF}", file=sys.stderr)
+        return 1
+
+    for line in _pointer_lines(pointer):
+        print(line)
+    return 0
+
+
 def _battery_line(battery: devices.Battery) -> str:
     """One line per battery, keyed off Battery.state so it cannot drift."""
     match battery.state:
@@ -348,6 +431,20 @@ def main(argv: list[str] | None = None) -> int:
     scroll.add_argument("state", nargs="?", choices=["on", "off"],
                         help="omit to show the current setting")
 
+    pointer = subs.add_parser(
+        "pointer", help="per-device scroll and pointer speed (KWin, not the driver)")
+    pointer.add_argument("--device", help="match on device name or event name")
+    pointer.add_argument("--all", action="store_true",
+                         help="include non-Apple pointers")
+    pointer.add_argument("--scroll", type=float, metavar="FACTOR",
+                         help="scroll multiplier; 1.0 is untouched")
+    pointer.add_argument("--speed", type=float, metavar="ACCEL",
+                         help="pointer speed, -1.0 to 1.0; 0.0 is the default")
+    pointer.add_argument("--profile", choices=sorted(POINTER_PROFILES),
+                         help="acceleration curve; flat does not ramp with speed")
+    pointer.add_argument("--natural", choices=["on", "off"],
+                         help="natural scrolling (macOS direction)")
+
     setup = subs.add_parser(
         "setup", help="one-time privilege setup so the GUI never needs root"
     )
@@ -377,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
         "setup": cmd_setup,
         "scroll": cmd_scroll,
         "profile": cmd_profile,
+        "pointer": cmd_pointer,
     }
     if args.command in ("devices", "status", "keyd") and not hasattr(args, "module"):
         args.module = None
