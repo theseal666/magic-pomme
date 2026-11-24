@@ -513,9 +513,22 @@ class Tray(QSystemTrayIcon):
         self._apply(run)
 
     def _apply(self, action) -> None:
-        if message := guarded(action):
+        outcome: object = True
+
+        def run() -> None:
+            nonlocal outcome
+            outcome = action()
+
+        if message := guarded(run):
             self.showMessage("magic-pomme", message,
                              QSystemTrayIcon.MessageIcon.Warning, 6000)
+        elif outcome is False:
+            # The setter reached the config but not KWin, so the running
+            # session is unchanged. Saying "done" here would be a lie.
+            self.showMessage("magic-pomme",
+                             "KWin did not answer - this takes effect at the "
+                             "next login",
+                             QSystemTrayIcon.MessageIcon.Information, 6000)
         self.refresh()
 
     def _write(self, module: str, param: str, value: int) -> None:

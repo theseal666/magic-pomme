@@ -197,11 +197,44 @@ class TestProfileGoesThroughDBus:
                             lambda p: plasma_input.Settings(flat_profile=False))
         assert not plasma_input.set_flat_profile(_trackpad(), True)
 
-    def test_scroll_factor_does_reconfigure(self, monkeypatch):
-        """The config-backed settings need it, or they land at next login."""
+    def test_no_setting_reconfigures(self, monkeypatch):
+        """Measured on KWin 6.3.6: config plus reconfigure changes nothing.
+
+        ScrollFactor written as 0.75 with a reconfigure left KWin reporting
+        0.5, and the same for PointerAcceleration. The config is only read when
+        the session starts, which is why writing it looked like it worked.
+        """
         calls = self._traced(monkeypatch)
         plasma_input.set_scroll_factor(_trackpad(), 0.5)
-        assert calls == ["config", "reconfigure"]
+        plasma_input.set_pointer_acceleration(_trackpad(), -0.25)
+        plasma_input.set_natural_scroll(_trackpad(), True)
+        assert "reconfigure" not in calls
+
+    def test_the_config_is_written_too_because_kwin_only_saves_changes(
+            self, monkeypatch):
+        """A key KWin never rewrites stays stale and wins at the next login.
+
+        Seen with ScrollFactor at 0.75 in the file while KWin ran 0.5: setting
+        0.5 again changed nothing, so KWin wrote nothing, and the file kept a
+        value the session had never used.
+        """
+        calls = self._traced(monkeypatch)
+        plasma_input.set_scroll_factor(_trackpad(), 0.5)
+        assert "config" in calls
+
+    def test_an_unreachable_kwin_is_reported_rather_than_claimed(self, monkeypatch):
+        calls = self._traced(monkeypatch)
+        monkeypatch.setattr(plasma_input, "_live_set", lambda *a: False)
+        assert plasma_input.set_scroll_factor(_trackpad(), 0.5) is False
+        assert "config" in calls, (
+            "with no KWin to answer, the config write is all that is left"
+        )
+
+    def test_whole_numbers_keep_their_decimal_point(self):
+        """gdbus types a bare 1 as int32, and the property wants a double."""
+        assert plasma_input._double(1) == "1.0"
+        assert plasma_input._double(0) == "0.0"
+        assert plasma_input._double(-0.25) == "-0.25"
 
     def test_kwins_flat_value_is_one(self):
         """Established by watching KWin write it, not from libinput's enum,

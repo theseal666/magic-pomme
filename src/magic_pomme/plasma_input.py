@@ -18,25 +18,33 @@ Read and written through kreadconfig6/kwriteconfig6 rather than by parsing the
 file, because Plasma's nested group syntax is not standard INI and KConfig owns
 the escaping.
 
-Two mechanisms, and they are not interchangeable
-------------------------------------------------
+Write them on KWin's device object, not into the file
+-----------------------------------------------------
 
-``NaturalScroll``, ``ScrollFactor`` and ``PointerAcceleration`` are applied by
-writing the config and asking KWin to re-read it. Without that reconfigure the
-change only lands at the next login.
+Writing the config and calling ``reconfigure`` does **not** apply any of
+these. Measured on KWin 6.3.6: ``ScrollFactor`` set to 0.75 in kcminputrc,
+followed by a reconfigure, left KWin reporting 0.5 -- and the same for
+``PointerAcceleration``. The config is read when the session starts, so a
+config write lands at the next login and looks like it worked. That is what
+this module used to do for natural scrolling.
 
-The acceleration **profile** is different. ``reconfigure`` resets it to the
-device default and never reads the stored value, so writing the config and
-reconfiguring leaves the profile exactly as it was -- and worse, a reconfigure
-for any *other* setting silently throws a flat profile away. It has to be set
-live on KWin's own device object instead. KWin then writes
-``PointerAccelerationProfile`` to kcminputrc itself, which is how the canonical
-values were established by observation: 1 is flat and 2 is adaptive -- the
-reverse of libinput's own enum, so do not take that as the mapping. Verified
-on KWin 6.3.6.
+Setting the property on KWin's own device object
+(``/org/kde/KWin/InputDevice/<sysname>``) applies immediately, and KWin writes
+the key to kcminputrc itself. That is how the profile's stored values were
+established by observation: 1 is flat and 2 is adaptive -- the reverse of
+libinput's own enum, so do not take that as the mapping.
 
-So: profile through D-Bus and never followed by a reconfigure; everything else
-through KConfig followed by one.
+KWin only writes on an actual change, though: setting a property to the value
+it already holds persists nothing, so a stale key in the file survives
+untouched and wins at the next login. Measured with ScrollFactor at 0.75 in
+the file while KWin ran 0.5. The setters here therefore write the config as
+well -- same value, so the two cannot disagree.
+
+``reconfigure`` is worse than useless here: it resets the acceleration profile
+to the device default, so calling it after setting a flat profile undoes it.
+Nothing in this module calls it. The config write is kept only as the fallback
+for a session where KWin's object cannot be reached, where it is at least
+read at the next login.
 """
 
 from __future__ import annotations
@@ -311,36 +319,54 @@ def natural_scroll(pointer: Pointer) -> bool | None:
     return settings(pointer).natural_scroll
 
 
-def set_natural_scroll(pointer: Pointer, enabled: bool) -> None:
-    """Write the setting and make KWin pick it up immediately."""
-    _config_write(pointer, KEY, "true" if enabled else "false")
-    reconfigure()
+def _apply_live(pointer: Pointer, prop: str, value: str,
+                config_key: str, config_value: str) -> bool:
+    """Set the property on KWin, or fall back to the config for next login.
+
+    True means the running session changed. False means only the config was
+    written, which takes effect when the session next starts -- the caller
+    should say so rather than reporting success.
+    """
+    live = _live_set(pointer, prop, value)
+    # Written either way: KWin persists only what changes, so this is what
+    # keeps a stale key in the file from winning at the next login.
+    _config_write(pointer, config_key, config_value)
+    return live
 
 
-def set_scroll_factor(pointer: Pointer, factor: float) -> None:
+def _double(value: float) -> str:
+    """Format for gdbus, which types a bare 1 as int32 and rejects it."""
+    return repr(float(value))
+
+
+def set_natural_scroll(pointer: Pointer, enabled: bool) -> bool:
+    """Natural scrolling: content follows the fingers, as macOS does."""
+    return _apply_live(pointer, "naturalScroll", "true" if enabled else "false",
+                       KEY, "true" if enabled else "false")
+
+
+def set_scroll_factor(pointer: Pointer, factor: float) -> bool:
     """Scroll multiplier. 1.0 is untouched; below that is slower."""
     if factor <= 0:
         raise ValueError("scroll factor must be positive")
-    _config_write(pointer, "ScrollFactor", f"{factor:g}")
-    reconfigure()
+    return _apply_live(pointer, "scrollFactor", _double(factor),
+                       "ScrollFactor", f"{factor:g}")
 
 
-def set_pointer_acceleration(pointer: Pointer, speed: float) -> None:
+def set_pointer_acceleration(pointer: Pointer, speed: float) -> bool:
     """Pointer speed, -1.0 to 1.0, where 0.0 is the device default."""
     if not -1.0 <= speed <= 1.0:
         raise ValueError("pointer acceleration must be between -1.0 and 1.0")
-    _config_write(pointer, "PointerAcceleration", f"{speed:g}")
-    reconfigure()
+    return _apply_live(pointer, "pointerAcceleration", _double(speed),
+                       "PointerAcceleration", f"{speed:g}")
 
 
 def set_flat_profile(pointer: Pointer, flat: bool) -> bool:
     """Switch the acceleration profile, live.
 
-    Deliberately not a config write followed by a reconfigure: KWin resets the
-    profile to the device default on reconfigure and ignores the stored value,
-    so that route is a no-op. Setting it on the live object works, and KWin
-    persists it to kcminputrc on its own. Nothing here may call reconfigure()
-    afterwards -- that would undo it.
+    As with every setting here, the config route does nothing; see the module
+    docstring. Nothing may call reconfigure() afterwards either -- that resets
+    the profile to the device default.
     """
     prop = ("pointerAccelerationProfileFlat" if flat
             else "pointerAccelerationProfileAdaptive")
@@ -350,10 +376,12 @@ def set_flat_profile(pointer: Pointer, flat: bool) -> bool:
 
 
 def reconfigure() -> bool:
-    """Ask KWin to re-read its configuration. Without this, nothing changes.
+    """Ask KWin to re-read its configuration.
 
-    Note that this resets the acceleration profile to the device default; see
-    set_flat_profile().
+    Kept for callers outside this module. It does **not** apply the per-device
+    pointer settings -- measured, see the module docstring -- and it resets the
+    acceleration profile to the device default, so the setters here never use
+    it.
     """
     for tool in ("qdbus6", "qdbus"):
         if path := shutil.which(tool):

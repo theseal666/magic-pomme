@@ -179,24 +179,38 @@ PointerAccelerationProfile=1
 ```
 
 `ScrollFactor` is a multiplier (1.0 untouched). `PointerAcceleration` runs
--1.0 to 1.0 with 0.0 the device default. Both are applied by writing the
-config and asking KWin to re-read it.
+-1.0 to 1.0 with 0.0 the device default.
 
-### The profile cannot be written, only set
+### Writing the file does not apply any of them
 
-`PointerAccelerationProfile` is a real key -- it is in `libkwin.so.6` -- but
-writing it achieves nothing. `reconfigure` resets the profile to the device
-default and never reads the stored value, so a config write followed by a
-reconfigure leaves the profile untouched, and a reconfigure for any *other*
-setting silently throws a flat profile away. Tested with 1, 2, `flat` and
-`FLAT`: all ended up adaptive.
+Measured on KWin 6.3.6: `ScrollFactor` written as 0.75 followed by
+`reconfigure` left KWin reporting 0.5, and the same for `PointerAcceleration`.
+The file is read when the session starts, so a config write lands at the next
+login and looks like it worked in between. `PointerAccelerationProfile` is no
+different, and was tested with 1, 2, `flat` and `FLAT`: all stayed adaptive.
+Worse, `reconfigure` *resets* the profile to the device default, so calling it
+after setting a flat profile undoes it.
 
-Set it on KWin's live device object instead
-(`org.kde.KWin.InputDevice.pointerAccelerationProfileFlat` on
-`/org/kde/KWin/InputDevice/<sysname>`) and do not reconfigure afterwards. KWin
-then writes the key to `kcminputrc` on its own, which is how the values were
-established by observation: **1 is flat, 2 is adaptive** -- the reverse of
-libinput's own enum, so do not infer it from there. Verified on KWin 6.3.6.
+Set the property on KWin's own device object instead
+(`/org/kde/KWin/InputDevice/<sysname>`, interface `org.kde.KWin.InputDevice`,
+properties `scrollFactor`, `pointerAcceleration`, `naturalScroll`,
+`pointerAccelerationProfileFlat`). That applies immediately, and never
+reconfigure afterwards.
+
+KWin then writes the key to `kcminputrc` itself, which is how the profile's
+values were established by observation: **1 is flat, 2 is adaptive** -- the
+reverse of libinput's own enum, so do not infer it from there.
+
+But KWin writes **only on an actual change**. Setting a property to the value
+it already holds persists nothing, so a stale key in the file survives and
+wins at the next login -- seen with `ScrollFactor` at 0.75 in the file while
+the session ran 0.5. Write the config as well, with the same value, so the two
+cannot drift.
+
+A value starting with a dash needs `--` before it: `kwriteconfig6 ... --key
+PointerAcceleration -0.25` answers "Unknown options: 0, ., 2, 5." and exits 1,
+because it parses with QCommandLineParser. Positive values work, so this hides
+until someone picks a speed left of centre.
 
 ### No macOS-like curve is reachable
 

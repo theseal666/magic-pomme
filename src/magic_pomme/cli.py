@@ -89,14 +89,15 @@ def cmd_pointer(args: argparse.Namespace) -> int:
         return 2
 
     pointer = found[0]
+    live = True
     try:
         if args.scroll is not None:
-            plasma_input.set_scroll_factor(pointer, args.scroll)
+            live &= plasma_input.set_scroll_factor(pointer, args.scroll)
         if args.speed is not None:
-            plasma_input.set_pointer_acceleration(pointer, args.speed)
+            live &= plasma_input.set_pointer_acceleration(pointer, args.speed)
         if args.natural is not None:
-            plasma_input.set_natural_scroll(pointer, args.natural == "on")
-        # Last, and never followed by a reconfigure: see set_flat_profile().
+            live &= plasma_input.set_natural_scroll(pointer,
+                                                    args.natural == "on")
         if args.profile is not None:
             flat = POINTER_PROFILES[args.profile]
             if not plasma_input.set_flat_profile(pointer, flat):
@@ -107,6 +108,10 @@ def cmd_pointer(args: argparse.Namespace) -> int:
             subprocess.SubprocessError) as error:
         print(f"  {BAD}{error}{OFF}", file=sys.stderr)
         return 1
+
+    if not live:
+        print(f"  {DIM}KWin did not answer - written to the config, so this "
+              f"takes effect at the next login{OFF}")
 
     for line in _pointer_lines(pointer):
         print(line)
