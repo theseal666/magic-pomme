@@ -44,9 +44,35 @@ QUICK_TOGGLES = (
 )
 # Presets rather than sliders: the tray menu is exported to Plasma over
 # DBusMenu, which carries menu items and not widgets, so a QSlider in here
-# renders as nothing at all.
-SCROLL_STEPS = (0.3, 0.5, 0.75, 1.0, 1.5)
-SPEED_STEPS = (-0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0)
+# renders as nothing at all. Named, because a column of bare decimals tells
+# nobody which way is faster.
+SCROLL_STEPS = (
+    (0.3, "Much slower"),
+    (0.5, "Slower"),
+    (0.75, "Slightly slower"),
+    (1.0, "Default"),
+    (1.5, "Faster"),
+)
+SPEED_STEPS = (
+    (-0.5, "Much slower"),
+    (-0.25, "Slower"),
+    (0.0, "Default"),
+    (0.25, "Faster"),
+    (0.5, "Much faster"),
+    (1.0, "Fastest"),
+)
+
+ICONS = {
+    "keyboard": "input-keyboard",
+    "mouse": "input-mouse",
+    "touchpad": "input-touchpad",
+    "scroll": "input-mouse",
+    "speed": "speedometer",
+    "accel": "preferences-desktop-mouse",
+    "scan": "view-refresh",
+    "pair": "network-bluetooth",
+    "battery": "battery",
+}
 
 FN_LABELS = {
     1: "Media keys (match printed legends)",
@@ -98,6 +124,11 @@ class BatteryWorker(QThread):
     def stop(self) -> None:
         self._stop = True
         self._wake.set()
+
+
+def icon(key: str) -> QIcon:
+    """A themed icon, or an empty one. Plasma renders these in the SNI menu."""
+    return QIcon.fromTheme(ICONS.get(key, key))
 
 
 def guarded(action) -> str | None:
@@ -166,6 +197,7 @@ class Tray(QSystemTrayIcon):
 
         self._batteries: dict[str, devices.Battery] = {}
         self._battery_nodes: set[str] = set()
+        self._touchpads: set[str] = set()
         self._worker = BatteryWorker()
         self._worker.updated.connect(self._on_batteries)
         self._worker.start()
@@ -188,7 +220,6 @@ class Tray(QSystemTrayIcon):
         self._timer.timeout.connect(self._refresh_tooltip)
         self._timer.start(REFRESH_MS)
 
-        self.activated.connect(self._on_activated)
         self.refresh()
 
     def _on_batteries(self, readings: dict) -> None:
@@ -224,27 +255,34 @@ class Tray(QSystemTrayIcon):
     def _refresh_tooltip(self) -> None:
         self.setToolTip(self._tooltip(self._found_with_batteries()))
 
-    def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.refresh()
-            self._menu.popup(self.geometry().center())
+    # There is deliberately no activated handler. Opening the menu ourselves
+    # meant popup(self.geometry().center()), and under Wayland
+    # QSystemTrayIcon::geometry() is an empty QRect -- measured on this
+    # machine -- so the menu was placed at (0, 0) and then shoved somewhere
+    # else to fit the screen, landing in a different spot each time.
+    # QCursor::pos() is equally useless there, also measured. Plasma knows
+    # where the icon is; let it place the menu.
 
     def refresh(self) -> None:
         self._menu.clear()
         found = self._found_with_batteries()
         status = permissions.status()
+        pointers = plasma_input.pointers()
+        self._touchpads = {pointer.name for pointer in pointers
+                           if pointer.touchpad}
 
         if not found:
             self._menu.addAction("No Apple input devices").setEnabled(False)
         for device in found:
-            self._menu.addAction(self._device_label(device)).setEnabled(False)
+            entry = self._menu.addAction(icon(self._device_kind(device)),
+                                         self._device_label(device))
+            entry.setEnabled(False)
         self.setToolTip(self._tooltip(found))
 
-        self._menu.addSeparator()
         writable = not status.unwritable
-        # Said out loud, because it is the first thing that misleads: these are
+        # Spelled out, because it is the first thing that misleads: these are
         # module parameters, shared by every device the driver binds.
-        self._menu.addAction("Driver - affects all devices").setEnabled(False)
+        self._menu.addSection("Driver - shared by all devices")
 
         for module, param, label in QUICK_TOGGLES:
             value = drivers.read(module, param)
@@ -271,10 +309,8 @@ class Tray(QSystemTrayIcon):
                 group.addAction(action)
                 submenu.addAction(action)
 
-        pointers = plasma_input.pointers()
         if pointers:
-            self._menu.addSeparator()
-            self._menu.addAction("Per device").setEnabled(False)
+            self._menu.addSection("Per device")
         for pointer in pointers:
             self._add_pointer_menu(pointer)
 
@@ -283,7 +319,7 @@ class Tray(QSystemTrayIcon):
             hint = self._setup_hint(status)
             self._menu.addAction(hint).setEnabled(False)
 
-        self._menu.addSeparator()
+        self._menu.addSection("Bluetooth")
         self._add_pairing_menu()
 
         self._menu.addSeparator()
@@ -313,7 +349,7 @@ class Tray(QSystemTrayIcon):
             self._menu.addAction("No powered Bluetooth adapter").setEnabled(False)
             return
 
-        submenu = self._menu.addMenu("Pair a device")
+        submenu = self._menu.addMenu(icon("pair"), "Pair a device")
         if self._pairing:
             submenu.addAction(f"Pairing {self._pairing}...").setEnabled(False)
             return
@@ -321,7 +357,7 @@ class Tray(QSystemTrayIcon):
             submenu.addAction(f"Scanning {SCAN_SECONDS}s...").setEnabled(False)
             return
 
-        action = QAction("Scan for devices", submenu)
+        action = QAction(icon("scan"), "Scan for devices", submenu)
         action.triggered.connect(self._start_scan)
         submenu.addAction(action)
         submenu.addSeparator()
@@ -410,9 +446,15 @@ class Tray(QSystemTrayIcon):
             return f"Toggles need a {session.refresh_action()}"
         return "Parameters are not writable"
 
+    def _device_kind(self, device: devices.Device) -> str:
+        """Which icon this device gets. Trackpads are known from KWin's list."""
+        if device.name in self._touchpads:
+            return "touchpad"
+        return "keyboard" if device.driver == "apple" else "mouse"
+
     def _device_label(self, device: devices.Device) -> str:
         if device.battery is None:
-            charge = "battery reading..." if self._has_battery(device) else "no battery"
+            charge = "reading..." if self._has_battery(device) else "no battery"
         else:
             match device.battery.state:
                 case "refused":
@@ -422,8 +464,8 @@ class Tray(QSystemTrayIcon):
                 case _:
                     charge = f"{device.battery.capacity}%"
                     if device.battery.charging:
-                        charge += " charging"
-        return f"{device.name}  -  {device.transport}, {charge}"
+                        charge += ", charging"
+        return f"{device.name}   {charge}"
 
     @staticmethod
     def _tooltip(found: list[devices.Device]) -> str:
@@ -442,7 +484,8 @@ class Tray(QSystemTrayIcon):
         above cannot do.
         """
         settings = plasma_input.settings(pointer)
-        submenu = self._menu.addMenu(pointer.name)
+        submenu = self._menu.addMenu(
+            icon("touchpad" if pointer.touchpad else "mouse"), pointer.name)
 
         natural = QAction("Natural scrolling", submenu, checkable=True)
         natural.setChecked(bool(settings.natural_scroll))
@@ -453,12 +496,13 @@ class Tray(QSystemTrayIcon):
         submenu.addAction(natural)
 
         self._add_steps(
-            submenu, "Scroll speed", SCROLL_STEPS, settings.scroll_factor, 1.0,
+            submenu, "Scroll speed", "scroll", SCROLL_STEPS,
+            settings.scroll_factor, 1.0,
             lambda value, pt=pointer: self._apply(
                 lambda: plasma_input.set_scroll_factor(pt, value)),
         )
         self._add_steps(
-            submenu, "Pointer speed", SPEED_STEPS,
+            submenu, "Pointer speed", "speed", SPEED_STEPS,
             settings.pointer_acceleration, 0.0,
             lambda value, pt=pointer: self._apply(
                 lambda: plasma_input.set_pointer_acceleration(pt, value)),
@@ -466,7 +510,7 @@ class Tray(QSystemTrayIcon):
 
         if not settings.supports_flat:
             return
-        accel = submenu.addMenu("Acceleration")
+        accel = submenu.addMenu(icon("accel"), "Acceleration")
         group = QActionGroup(accel)
         group.setExclusive(True)
         for label, flat in (("Adaptive - ramps with speed", False),
@@ -480,26 +524,27 @@ class Tray(QSystemTrayIcon):
             accel.addAction(entry)
 
     @staticmethod
-    def _add_steps(parent: QMenu, title: str, steps: tuple[float, ...],
+    def _add_steps(parent: QMenu, title: str, art: str,
+                   steps: tuple[tuple[float, str], ...],
                    current: float | None, default: float, apply) -> None:
         """A preset submenu, with the live value shown when it is off-grid.
 
         Showing "current" rather than silently checking the nearest step keeps
         a hand-tuned value from being misreported as one of these presets.
         """
-        submenu = parent.addMenu(title)
-        matches = [step for step in steps
+        submenu = parent.addMenu(icon(art), title)
+        matches = [step for step, _ in steps
                    if current is not None and abs(current - step) < 0.01]
         if current is not None and not matches:
-            submenu.addAction(f"current: {current:g}").setEnabled(False)
+            submenu.addAction(f"Currently {current:g}").setEnabled(False)
             submenu.addSeparator()
 
         group = QActionGroup(submenu)
         group.setExclusive(True)
-        for step in steps:
-            label = f"{step:g}"
+        for step, name in steps:
+            label = f"{name}   {step:g}"
             if abs(step - default) < 0.01:
-                label += "  (default)"
+                label = f"{name}   {step:g}  *"
             entry = QAction(label, submenu, checkable=True)
             entry.setChecked(step in matches)
             entry.triggered.connect(lambda _checked, value=step: apply(value))
@@ -560,6 +605,11 @@ def wait_for_tray(app: QApplication, timeout: float = TRAY_WAIT_SECONDS) -> bool
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("magic-pomme")
+    # Qt leaves the icon theme at hicolor unless KDE's platform theme plugin
+    # loads, and hicolor has none of the icons this menu asks for. Breeze is
+    # present wherever this applet runs.
+    if QIcon.themeName() in ("", "hicolor"):
+        QIcon.setThemeName("breeze")
     app.setQuitOnLastWindowClosed(False)   # a tray app has no windows
 
     if not wait_for_tray(app):
